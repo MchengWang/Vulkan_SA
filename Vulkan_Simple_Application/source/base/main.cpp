@@ -46,6 +46,43 @@ private:
 
 	}
 
+	void createInstance()
+	{
+		/**
+		* 实例是应用与 Vulkan 库之间的连接，创建该实例涉及向驱动程序指定有关应用的一些详细信息。
+		*/
+		constexpr vk::ApplicationInfo appInfo{
+			.pApplicationName = "Triangle",
+			.applicationVersion = VK_MAKE_VERSION( 1, 0, 0 ),
+			.pEngineName = "Engine",
+			.engineVersion = VK_MAKE_VERSION( 1, 0, 0 ),
+			.apiVersion = vk::ApiVersion14
+		};
+
+		// 从 GLFW 获取所需的实例扩展。
+		uint32_t glfwExtensionCount = 0;
+		const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+		// 检查 Vulkan 实现是否支持所需的 GLFW 扩展。
+		auto extensionProperties = context.enumerateInstanceExtensionProperties();
+		for (uint32_t i = 0; i < glfwExtensionCount; ++i)
+		{
+			if (std::ranges::none_of(extensionProperties,
+				[glfwExtension = glfwExtensions[i]](auto const& extensionProperty)
+				{ return strcmp(extensionProperty.extensionName, glfwExtension) == 0; }))
+				throw std::runtime_error("Required GLFW extension not supported: " + std::string(glfwExtensions[i]));
+		}
+
+		vk::InstanceCreateInfo createInfo{
+			.pApplicationInfo = &appInfo,
+			.enabledExtensionCount = glfwExtensionCount,
+			.ppEnabledExtensionNames = glfwExtensions
+		};
+
+		instance = vk::raii::Instance(context, createInfo);
+
+	}
+
 	void mainLoop()
 	{
 		while (!glfwWindowShouldClose(window))
@@ -65,7 +102,10 @@ private:
 * private variables (private functions calls only)
 */
 private:
-	GLFWwindow* window;
+	GLFWwindow* window = nullptr;
+
+	vk::raii::Context context;
+	vk::raii::Instance instance = nullptr;
 
 };
 
