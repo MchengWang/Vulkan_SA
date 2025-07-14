@@ -3,10 +3,18 @@
 #include <cstdlib>
 
 #include <algorithm>
+#include <memory>
+
 #include <string>
 #include <vector>
 
+#ifdef __INTELLISENSE__
+#include <vulkan/vulkan_raii.hpp>
+#else
 import vulkan_hpp;
+#endif // __INTELLISENSE__
+
+#include <vulkan/vk_platform.h>
 
 #include <GLFW/glfw3.h>
 
@@ -57,6 +65,7 @@ private:
 	{
 		createInstance();
 		setupDebugMessenger();
+		pickPhysicalDevice();
 	}
 
 	void createInstance()
@@ -133,6 +142,42 @@ private:
 		debugMessenger = instance.createDebugUtilsMessengerEXT(debugUtilsMessengerCreateInfoEXT);
 	}
 
+	void pickPhysicalDevice()
+	{
+		// 列出所有物理显卡
+		auto devices = instance.enumeratePhysicalDevices();
+
+		const auto devIter = std::ranges::find_if(devices, [&](auto const& device)
+			{
+				auto queueFamilies = device.getQueueFamilyProperties();
+				bool isSuitable = device.getProperties().apiVersion >= VK_API_VERSION_1_3;
+				const auto qfpIter = std::ranges::find_if(queueFamilies, [](vk::QueueFamilyProperties const& qfp)
+					{
+						return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0);
+					});
+
+				isSuitable = isSuitable && (qfpIter != queueFamilies.end());
+				auto extensions = device.enumerateDeviceExtensionProperties();
+				bool found = true;
+				for (auto const& extension : deviceExtensions)
+				{
+					auto extensionIter = std::ranges::find_if(extensions, [extension](auto const& ext)
+						{
+							return strcmp(ext.extensionName, extension) == 0;
+						});
+					found = found && extensionIter != extensions.end();
+				}
+
+				isSuitable = isSuitable && found;
+				printf("\n");
+
+				if (isSuitable)
+					physicalDevice = device;
+
+				return isSuitable;
+			});
+	}
+
 	void mainLoop()
 	{
 		while (!glfwWindowShouldClose(window))
@@ -180,6 +225,14 @@ private:
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+	vk::raii::PhysicalDevice physicalDevice = nullptr;
+
+	std::vector<const char*> deviceExtensions = {
+		vk::KHRSwapchainExtensionName,
+		vk::KHRSpirv14ExtensionName,
+		vk::KHRSynchronization2ExtensionName,
+		vk::KHRCreateRenderpass2ExtensionName
+	};
 
 };
 
