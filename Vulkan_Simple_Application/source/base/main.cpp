@@ -67,6 +67,7 @@ private:
 	{
 		createInstance();
 		setupDebugMessenger();
+		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
 	}
@@ -145,40 +146,51 @@ private:
 		debugMessenger = instance.createDebugUtilsMessengerEXT(debugUtilsMessengerCreateInfoEXT);
 	}
 
+	void createSurface()
+	{
+		VkSurfaceKHR _surface;
+		if (glfwCreateWindowSurface(*instance, window, nullptr, &_surface) != 0)
+			throw std::runtime_error("failed to create window surface!");
+
+		surface = vk::raii::SurfaceKHR(instance, _surface);
+	}
+
 	void pickPhysicalDevice()
 	{
-		// 列出所有物理显卡
-		auto devices = instance.enumeratePhysicalDevices();
-
+		std::vector<vk::raii::PhysicalDevice> devices = instance.enumeratePhysicalDevices();
 		const auto devIter = std::ranges::find_if(devices, [&](auto const& device)
 			{
-				auto queueFamilies = device.getQueueFamilyProperties();
-				bool isSuitable = device.getProperties().apiVersion >= VK_API_VERSION_1_3;
-				const auto qfpIter = std::ranges::find_if(queueFamilies, [](vk::QueueFamilyProperties const& qfp)
+				// 检查设备是否支持 Vulkan 1.3
+				bool supprotsVulkan1_3 = device.getProperties().apiVersion >= VK_API_VERSION_1_3;
+
+				// 检查全部队列是否能支持图像操作
+				auto queueFmailies = device.getQueueFamilyProperties();
+				bool supportsGraphics = std::ranges::any_of(queueFmailies, [](auto const& qfp) 
 					{
-						return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0);
+						return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics);
 					});
 
-				isSuitable = isSuitable && (qfpIter != queueFamilies.end());
-				auto extensions = device.enumerateDeviceExtensionProperties();
-				bool found = true;
-				for (auto const& extension : deviceExtensions)
-				{
-					auto extensionIter = std::ranges::find_if(extensions, [extension](auto const& ext)
-						{
-							return strcmp(ext.extensionName, extension) == 0;
-						});
-					found = found && extensionIter != extensions.end();
-				}
+				// 检查所需要的设备扩展是否可用
+				auto avaialbleDeviceExtensions = device.enumerateDeviceExtensionProperties();
+				bool supportsAllRequiredExtensions = std::ranges::all_of(requiredDeviceExtension, [&avaialbleDeviceExtensions](auto const& requiredDeviceExtension)
+					{
+						return std::ranges::any_of(avaialbleDeviceExtensions, [requiredDeviceExtension](auto const& availableDeviceExtension)
+							{
+								return strcmp(availableDeviceExtension.extensionName, requiredDeviceExtension) == 0;
+							});
+					});
 
-				isSuitable = isSuitable && found;
-				printf("\n");
+				auto features = device.template getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+				bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
+					features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
-				if (isSuitable)
-					physicalDevice = device;
-
-				return isSuitable;
+				return supprotsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
 			});
+
+		if (devIter != devices.end())
+			physicalDevice = *devIter;
+		else
+			throw std::runtime_error("failed to find a suitable GPU!");
 	}
 
 	void createLogicalDevice()
@@ -195,6 +207,41 @@ private:
 		assert(graphicsQueueFamilyProperty != queueFamilyProperties.end() && "No graphics queue family found!");
 
 		auto graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties.begin(), graphicsQueueFamilyProperty));
+
+		// 确定支持 present 的 queueFamilyIndex
+		// 首先检查 graphicsIndex 是否足够好
+		auto presentIndex = physicalDevice.getSurfaceSupportKHR(graphicsIndex, *surface)
+			? graphicsIndex
+			: static_cast<uint32_t>(queueFamilyProperties.size());
+
+		if (presentIndex == queueFamilyProperties.size())
+		{
+			for (size_t i = 0; i < queueFamilyProperties.size(); i++)
+			{
+				if ((queueFamilyProperties[i].queueFlags & vk::QueueFlagBits::eGraphics) &&
+					physicalDevice.getSurfaceSupportKHR(static_cast<uint32_t>(i), *surface))
+				{
+					graphicsIndex = static_cast<uint32_t>(i);
+					presentIndex = graphicsIndex;
+					break;
+				}
+			}
+
+			if (presentIndex == queueFamilyProperties.size())
+			{
+				for (size_t i = 0; i < queueFamilyProperties.size(); i++)
+				{
+					if (physicalDevice.getSurfaceSupportKHR(static_cast<uint32_t>(i), *surface))
+					{
+						presentIndex = static_cast<uint32_t>(i);
+						break;
+					}
+				}
+			}
+		}
+
+		if ((graphicsIndex == queueFamilyProperties.size()) || (presentIndex == queueFamilyProperties.size()))
+			throw std::runtime_error("Could not find a queue for graphics or present -> terminating");
 
 		// 创建一个功能结构链
 		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT> featureChain = {
@@ -215,12 +262,13 @@ private:
 			.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
 			.queueCreateInfoCount = 1,
 			.pQueueCreateInfos = &deviceQueueCreateInfo,
-			.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size()),
-			.ppEnabledExtensionNames = deviceExtensions.data()
+			.enabledExtensionCount = static_cast<uint32_t>(requiredDeviceExtension.size()),
+			.ppEnabledExtensionNames = requiredDeviceExtension.data()
 		};
 
 		device = vk::raii::Device(physicalDevice, deviceCreateInfo);
 		graphicsQueue = vk::raii::Queue(device, graphicsIndex, 0);
+		presentQueue = vk::raii::Queue(device, presentIndex, 0);
 	}
 
 	void mainLoop()
@@ -270,11 +318,15 @@ private:
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+	vk::raii::SurfaceKHR surface = nullptr;
+
 	vk::raii::PhysicalDevice physicalDevice = nullptr;
 	vk::raii::Device device = nullptr;
+	
 	vk::raii::Queue graphicsQueue = nullptr;
+	vk::raii::Queue presentQueue = nullptr;
 
-	std::vector<const char*> deviceExtensions = {
+	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName,
 		vk::KHRSpirv14ExtensionName,
 		vk::KHRSynchronization2ExtensionName,
