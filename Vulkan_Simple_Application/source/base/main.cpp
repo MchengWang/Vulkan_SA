@@ -78,6 +78,7 @@ private:
 		createGraphicsPipeline();
 		createCommandPool();
 		createCommandBuffer();
+		createSyncObjects();
 	}
 
 	void createInstance()
@@ -254,7 +255,7 @@ private:
 		// 创建一个功能结构链
 		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT> featureChain = {
 			{}, // vk::PhysicalDeviceFeatures2 (empty for now)
-			{ .dynamicRendering = true }, // 从 Vulkan 1.3 启用动态渲染
+			{ .synchronization2 = true, .dynamicRendering = true }, // 从 Vulkan 1.3 启用动态渲染
 			{ .extendedDynamicState = true} // 从扩展启用扩展动态状态
 		};
 
@@ -466,11 +467,61 @@ private:
 		commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
 	}
 
+	void createSyncObjects()
+	{
+		presentCompleteSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+		renderFinishedSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+		drawFence = vk::raii::Fence(device, { .flags = vk::FenceCreateFlagBits::eSignaled });
+	}
+
 	void mainLoop()
 	{
 		while (!glfwWindowShouldClose(window))
 		{
 			glfwPollEvents();
+			drawFrame();
+		}
+	}
+
+	void drawFrame()
+	{
+		presentQueue.waitIdle();
+
+		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphore, nullptr);
+		recordCommandBuffer(imageIndex);
+
+		device.resetFences(*drawFence);
+		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+		const vk::SubmitInfo submitInfo
+		{
+			.waitSemaphoreCount = 1,
+			.pWaitSemaphores = &*presentCompleteSemaphore,
+			.pWaitDstStageMask = &waitDestinationStageMask,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &*commandBuffer,
+			.signalSemaphoreCount = 1,
+			.pSignalSemaphores = &*renderFinishedSemaphore
+		};
+
+		graphicsQueue.submit(submitInfo, *drawFence);
+
+		while (vk::Result::eTimeout == device.waitForFences(*drawFence, vk::True, UINT64_MAX));
+
+		const vk::PresentInfoKHR presentInfoKHR
+		{ 
+			.waitSemaphoreCount = 1, 
+			.pWaitSemaphores = &*renderFinishedSemaphore, 
+			.swapchainCount = 1, 
+			.pSwapchains = &*swapChain, 
+			.pImageIndices = &imageIndex 
+		};
+		result = presentQueue.presentKHR( presentInfoKHR);
+
+		switch (result)
+		{
+		case vk::Result::eSuccess: break;
+		case vk::Result::eSuboptimalKHR: std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n"; break;
+		default: break; // 返回一个不确定的结果
 		}
 	}
 
@@ -560,8 +611,8 @@ private:
 		vk::ImageMemoryBarrier2 barrier = {
 			.srcStageMask = src_stage_mask,
 			.srcAccessMask = src_access_mask,
-			.dstStageMask = src_stage_mask,
-			.dstAccessMask = src_access_mask,
+			.dstStageMask = dst_stage_mask,
+			.dstAccessMask = dst_access_mask,
 			.oldLayout = old_layout,
 			.newLayout = new_layout,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -693,6 +744,10 @@ private:
 	vk::raii::CommandPool commandPool = nullptr;
 	uint32_t graphicsIndex = 0;
 	vk::raii::CommandBuffer commandBuffer = nullptr;
+
+	vk::raii::Semaphore presentCompleteSemaphore = nullptr;
+	vk::raii::Semaphore renderFinishedSemaphore = nullptr;
+	vk::raii::Fence drawFence = nullptr;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName,
