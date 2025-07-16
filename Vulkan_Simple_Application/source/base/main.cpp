@@ -341,6 +341,79 @@ private:
 		};
 		
 		vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+		
+		// 顶点输入
+		vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+
+		// 输入集合
+		vk::PipelineInputAssemblyStateCreateInfo inputAssembly
+		{
+			.topology = vk::PrimitiveTopology::eTriangleList
+		};
+
+		// 剪刀和视图
+		vk::PipelineViewportStateCreateInfo viewportState
+		{
+			.viewportCount = 1,
+			.scissorCount = 1
+		};
+
+		// 光栅器
+		vk::PipelineRasterizationStateCreateInfo rasterize
+		{
+			.depthClampEnable = vk::False,
+			.rasterizerDiscardEnable = vk::False,
+			.polygonMode = vk::PolygonMode::eFill,
+			.cullMode = vk::CullModeFlagBits::eBack,
+			.frontFace = vk::FrontFace::eClockwise,
+			.depthBiasEnable = vk::False,
+			.depthBiasSlopeFactor = 1.0f,
+			.lineWidth = 1.0f
+		};
+
+		// 多重采样
+		vk::PipelineMultisampleStateCreateInfo multisampling
+		{
+			.rasterizationSamples = vk::SampleCountFlagBits::e1,
+			.sampleShadingEnable = vk::False
+		};
+
+		// 色彩混合
+		vk::PipelineColorBlendAttachmentState colorBlendAttachment
+		{
+			.blendEnable = vk::False,
+			.colorWriteMask = vk::ColorComponentFlagBits::eR |
+			vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA 
+
+		};
+
+		vk::PipelineColorBlendStateCreateInfo colorBlending
+		{
+			.logicOpEnable = vk::False,
+			.logicOp = vk::LogicOp::eCopy,
+			.attachmentCount = 1,
+			.pAttachments = &colorBlendAttachment
+		};
+
+		// 动态状态
+		std::vector dynamicStates = {
+			vk::DynamicState::eViewport,
+			vk::DynamicState::eScissor
+		};
+
+		vk::PipelineDynamicStateCreateInfo dynamicState
+		{
+			.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+			.pDynamicStates = dynamicStates.data()
+		};
+
+		vk::PipelineLayoutCreateInfo pipelineLayoutInfo
+		{
+			.setLayoutCount = 0,
+			.pushConstantRangeCount = 0
+		};
+
+		pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 	}
 
 	void mainLoop()
@@ -463,6 +536,8 @@ private:
 	vk::Format swapChainImageFormat = vk::Format::eUndefined;
 	vk::Extent2D swapChainExtent;
 	std::vector<vk::raii::ImageView> swapChainImageViews;
+
+	vk::raii::PipelineLayout pipelineLayout = nullptr;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName,
