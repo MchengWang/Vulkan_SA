@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <stdexcept>
 #include <cstdlib>
 #include <cstdint>
@@ -74,6 +75,7 @@ private:
 		createLogicalDevice();
 		createSwapChain();
 		createImageViews();
+		createGraphicsPipeline();
 	}
 
 	void createInstance()
@@ -322,6 +324,25 @@ private:
 		}
 	}
 
+	void createGraphicsPipeline()
+	{
+		vk::raii::ShaderModule shaderModule = createShaderModule(readFile("resources/shaders/slang.spv"));
+
+		vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
+			.stage = vk::ShaderStageFlagBits::eVertex,
+			.module = shaderModule,
+			.pName = "vertMain"
+		};
+
+		vk::PipelineShaderStageCreateInfo fragShaderStageInfo{
+			.stage = vk::ShaderStageFlagBits::eFragment, 
+			.module = shaderModule,
+			.pName = "fragMain"
+		};
+		
+		vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+	}
+
 	void mainLoop()
 	{
 		while (!glfwWindowShouldClose(window))
@@ -341,6 +362,18 @@ private:
 * helper functions
 */
 private:
+	[[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code) const
+	{
+		vk::ShaderModuleCreateInfo createInfo{
+			.codeSize = code.size() * sizeof(char),
+			.pCode = reinterpret_cast<const uint32_t*>(code.data())
+		};
+
+		vk::raii::ShaderModule shaderModule{ device, createInfo};
+
+		return shaderModule;
+	}
+
 	std::vector<const char*> getRequiredExtensions()
 	{
 		uint32_t glfwExtensionCount = 0;
@@ -383,6 +416,22 @@ private:
 			std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
 			std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height),
 		};
+	}
+
+	static std::vector<char> readFile(const std::string& filename)
+	{
+		std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+		if (!file.is_open())
+			throw std::runtime_error("failed to open file!");
+
+		std::vector<char> buffer(file.tellg());
+
+		file.seekg(0, std::ios::beg);
+		file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+		file.close();
+
+		return buffer;
 	}
 
 	static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severty, vk::DebugUtilsMessageTypeFlagsEXT type, const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData, void*)
