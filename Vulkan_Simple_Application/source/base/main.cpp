@@ -76,6 +76,8 @@ private:
 		createSwapChain();
 		createImageViews();
 		createGraphicsPipeline();
+		createCommandPool();
+		createCommandBuffer();
 	}
 
 	void createInstance()
@@ -441,6 +443,29 @@ private:
 		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
 	}
 
+	void createCommandPool()
+	{
+		vk::CommandPoolCreateInfo poolInfo
+		{
+			.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer, 
+			.queueFamilyIndex = graphicsIndex
+		};
+
+		commandPool = vk::raii::CommandPool(device, poolInfo);
+	}
+
+	void createCommandBuffer()
+	{
+		vk::CommandBufferAllocateInfo allocInfo
+		{
+			.commandPool = commandPool,
+			.level = vk::CommandBufferLevel::ePrimary,
+			.commandBufferCount = 1
+		};
+
+		commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
+	}
+
 	void mainLoop()
 	{
 		while (!glfwWindowShouldClose(window))
@@ -500,6 +525,10 @@ private:
 		commandBuffer.beginRendering(renderingInfo);
 
 		// Rendering commands will go here
+		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
+		commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
+		commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
+		commandBuffer.draw(3, 1, 0, 0);
 
 		// End rendering
 		commandBuffer.endRendering();
@@ -661,6 +690,8 @@ private:
 
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
 	vk::raii::Pipeline graphicsPipeline = nullptr;
+	vk::raii::CommandPool commandPool = nullptr;
+	uint32_t graphicsIndex = 0;
 	vk::raii::CommandBuffer commandBuffer = nullptr;
 
 	std::vector<const char*> requiredDeviceExtension = {
