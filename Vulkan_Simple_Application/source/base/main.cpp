@@ -359,7 +359,7 @@ private:
 		};
 
 		// π‚’§∆˜
-		vk::PipelineRasterizationStateCreateInfo rasterize
+		vk::PipelineRasterizationStateCreateInfo rasterizer
 		{
 			.depthClampEnable = vk::False,
 			.rasterizerDiscardEnable = vk::False,
@@ -414,6 +414,31 @@ private:
 		};
 
 		pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
+
+		// ‰÷»æ
+		vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo
+		{
+			.colorAttachmentCount = 1,
+			.pColorAttachmentFormats = &swapChainImageFormat
+		};
+
+		vk::GraphicsPipelineCreateInfo pipelineInfo
+		{
+			.pNext = &pipelineRenderingCreateInfo,
+			.stageCount = 2,
+			.pStages = shaderStages,
+			.pVertexInputState = &vertexInputInfo,
+			.pInputAssemblyState = &inputAssembly,
+			.pViewportState = &viewportState,
+			.pRasterizationState = &rasterizer,
+			.pMultisampleState = &multisampling,
+			.pColorBlendState = &colorBlending,
+			.pDynamicState = &dynamicState,
+			.layout = pipelineLayout,
+			.renderPass = nullptr
+		};
+
+		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
 	}
 
 	void mainLoop()
@@ -538,6 +563,7 @@ private:
 	std::vector<vk::raii::ImageView> swapChainImageViews;
 
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
+	vk::raii::Pipeline graphicsPipeline = nullptr;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName,
