@@ -61,10 +61,16 @@ private:
 	{
 		glfwInit();
 
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+		//glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
 		window = glfwCreateWindow(WIDTH, HEIGHT, TITLE.c_str(), nullptr, nullptr);
+		glfwSetWindowUserPointer(window, this);
+		glfwSetFramebufferSizeCallback(window, [](GLFWwindow* window, int width, int height)
+			{
+				auto app = reinterpret_cast<Triangle*>(glfwGetWindowUserPointer(window));
+				app->framebufferResized = true;
+			});
 	}
 
 	void initVulkan()
@@ -222,7 +228,7 @@ private:
 		// 首先检查 graphicsIndex 是否足够好
 		auto presentIndex = physicalDevice.getSurfaceSupportKHR(graphicsIndex, *surface)
 			? graphicsIndex
-			: static_cast<uint32_t>(queueFamilyProperties.size());
+			: ~0;
 
 		if (presentIndex == queueFamilyProperties.size())
 		{
@@ -497,11 +503,19 @@ private:
 		device.waitIdle();
 	}
 
-	void drawFrame()
-	{
+	void drawFrame() {
 		while (vk::Result::eTimeout == device.waitForFences(*inFlightFences[currentFrame], vk::True, UINT64_MAX));
 
 		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[semaphoreIndex], nullptr);
+
+		if (result == vk::Result::eErrorOutOfDateKHR) 
+		{
+			recreateSwapChain();
+			return;
+		}
+		if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) 
+			throw std::runtime_error("failed to acquire swap chain image!");
+		
 
 		device.resetFences(*inFlightFences[currentFrame]);
 		commandBuffers[currentFrame].reset();
@@ -509,37 +523,35 @@ private:
 
 		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
 		const vk::SubmitInfo submitInfo
-		{
-			.waitSemaphoreCount = 1,
+		{ 
+			.waitSemaphoreCount = 1, 
 			.pWaitSemaphores = &*presentCompleteSemaphores[semaphoreIndex],
-			.pWaitDstStageMask = &waitDestinationStageMask,
+			.pWaitDstStageMask = &waitDestinationStageMask, 
 			.commandBufferCount = 1,
 			.pCommandBuffers = &*commandBuffers[currentFrame],
-			.signalSemaphoreCount = 1,
-			.pSignalSemaphores = &*renderFinishedSemaphores[imageIndex]
+			.signalSemaphoreCount = 1, 
+			.pSignalSemaphores = &*renderFinishedSemaphores[imageIndex] 
 		};
-
 		graphicsQueue.submit(submitInfo, *inFlightFences[currentFrame]);
-
-		
 
 		const vk::PresentInfoKHR presentInfoKHR
 		{ 
-			.waitSemaphoreCount = 1, 
+			.waitSemaphoreCount = 1,
 			.pWaitSemaphores = &*renderFinishedSemaphores[imageIndex],
 			.swapchainCount = 1, 
 			.pSwapchains = &*swapChain, 
 			.pImageIndices = &imageIndex 
 		};
-		result = presentQueue.presentKHR( presentInfoKHR);
 
-		switch (result)
-		{
-		case vk::Result::eSuccess: break;
-		case vk::Result::eSuboptimalKHR: std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n"; break;
-		default: break; // 返回一个不确定的结果
+		result = presentQueue.presentKHR(presentInfoKHR);
+
+		if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR || framebufferResized) {
+			framebufferResized = false;
+			recreateSwapChain();
 		}
-
+		else if (result != vk::Result::eSuccess) 
+			throw std::runtime_error("failed to present swap chain image!");
+		
 		semaphoreIndex = (semaphoreIndex + 1) % presentCompleteSemaphores.size();
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
@@ -555,6 +567,28 @@ private:
 * helper functions
 */
 private:
+	void recreateSwapChain()
+	{
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		while (width == 0 || height == 0)
+		{
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+
+		device.waitIdle();
+
+		cleanupSwapChain();
+		createSwapChain();
+		createImageViews();
+	}
+
+	void cleanupSwapChain()
+	{
+		swapChainImageViews.clear();
+	}
+	
 	void recordCommandBuffer(uint32_t imageIndex)
 	{
 		commandBuffers[currentFrame].begin({});
@@ -770,6 +804,8 @@ private:
 	std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
 	std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
 	std::vector<vk::raii::Fence> inFlightFences;
+
+	bool framebufferResized = false;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName,
