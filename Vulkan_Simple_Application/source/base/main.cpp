@@ -10,6 +10,7 @@
 
 #include <string>
 #include <vector>
+#include <array>
 
 #include <assert.h> // assert
 
@@ -22,6 +23,8 @@ import vulkan_hpp;
 #include <vulkan/vk_platform.h>
 
 #include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
 
 constexpr uint32_t WIDTH = 1290;
 constexpr uint32_t HEIGHT = 720;
@@ -38,6 +41,31 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif // NDEBUG
 
+
+struct Vertex
+{
+	glm::vec2 pos;
+	glm::vec3 color;
+
+	static vk::VertexInputBindingDescription getBindingDescription()
+	{
+		return { 0, sizeof(Vertex), vk::VertexInputRate::eVertex };
+	}
+
+	static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+	{
+		return {
+			vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, pos)),
+			vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
+		};
+	}
+};
+
+const std::vector<Vertex> vertices = {
+	{ {0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f }},
+	{ {0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f }},
+	{ {-0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }}
+};
 
 class Triangle
 {
@@ -84,6 +112,7 @@ private:
 		createImageViews();
 		createGraphicsPipeline();
 		createCommandPool();
+		createVertexBuffer();
 		createCommandBuffer();
 		createSyncObjects();
 	}
@@ -108,14 +137,14 @@ private:
 
 		// 检查 Vulkan 实现是否支持所需要的表示层
 		auto layerProperties = context.enumerateInstanceLayerProperties();
-		if (std::ranges::any_of(requiredLayers, [&layerProperties](auto const& requiredLayer)
-			{
-				return std::ranges::none_of(layerProperties, [requiredLayer](auto const& layerProperty)
-					{
-						return strcmp(layerProperty.layerName, requiredLayer) == 0;
-					});
-			}))
-			throw std::runtime_error("One or more required layers are not supported!");
+		for (auto const& requiredLayer : requiredLayers)
+		{
+			if (std::ranges::none_of(layerProperties, [requiredLayer](auto const& layerProperty)
+				{
+					return strcmp(layerProperty.layerName, requiredLayer) == 0;
+				}))
+				throw std::runtime_error("Required layer nor supported: " + std::string(requiredLayer));
+		}
 
 		// 从 GLFW 获取所需的实例扩展。
 		auto requiredExtensions = getRequiredExtensions();
@@ -217,7 +246,7 @@ private:
 		// 将第一个索引获取到支持图形的 queueFamilyProperties 中
 		auto graphicsQueueFamilyProperty = std::ranges::find_if(queueFamilyProperties, [](auto const& qfp)
 			{
-				return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlagBits>(0);
+				return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0);
 			});
 
 		assert(graphicsQueueFamilyProperty != queueFamilyProperties.end() && "No graphics queue family found!");
@@ -336,7 +365,7 @@ private:
 
 	void createGraphicsPipeline()
 	{
-		vk::raii::ShaderModule shaderModule = createShaderModule(readFile("resources/shaders/slang.spv"));
+		vk::raii::ShaderModule shaderModule = createShaderModule(readFile("resources/shaders/slang_vertexbuffer.spv"));
 
 		vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
 			.stage = vk::ShaderStageFlagBits::eVertex,
@@ -353,7 +382,15 @@ private:
 		vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 		
 		// 顶点输入
-		vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+		auto bindindDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
+		vk::PipelineVertexInputStateCreateInfo vertexInputInfo
+		{
+			.vertexBindingDescriptionCount = 1,
+			.pVertexBindingDescriptions = &bindindDescription,
+			.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
+			.pVertexAttributeDescriptions = attributeDescriptions.data()
+		};
 
 		// 输入集合
 		vk::PipelineInputAssemblyStateCreateInfo inputAssembly
@@ -462,6 +499,33 @@ private:
 		commandPool = vk::raii::CommandPool(device, poolInfo);
 	}
 
+	void createVertexBuffer()
+	{
+		vk::BufferCreateInfo bufferInfo
+		{
+			.size = sizeof(vertices[0]) * vertices.size(),
+			.usage = vk::BufferUsageFlagBits::eVertexBuffer,
+			.sharingMode = vk::SharingMode::eExclusive
+		};
+		
+		vertexBuffer = vk::raii::Buffer(device, bufferInfo);
+
+		vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
+		vk::MemoryAllocateInfo memoryAllocateInfo
+		{
+			.allocationSize = memRequirements.size,
+			.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)
+		};
+
+		vertexBufferMemory = vk::raii::DeviceMemory(device, memoryAllocateInfo);
+
+		vertexBuffer.bindMemory(*vertexBufferMemory, 0);
+
+		void* data = vertexBufferMemory.mapMemory(0, bufferInfo.size);
+		memcpy(data, vertices.data(), bufferInfo.size);
+		vertexBufferMemory.unmapMemory();
+	}
+
 	void createCommandBuffer()
 	{
 		vk::CommandBufferAllocateInfo allocInfo
@@ -567,6 +631,19 @@ private:
 * helper functions
 */
 private:
+	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+	{
+		vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties();
+
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+		{
+			if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+				return i;
+		}
+
+		throw std::runtime_error("failed to find suitable memory type!");
+	}
+	
 	void recreateSwapChain()
 	{
 		int width = 0, height = 0;
@@ -794,6 +871,10 @@ private:
 
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
 	vk::raii::Pipeline graphicsPipeline = nullptr;
+
+	vk::raii::Buffer vertexBuffer = nullptr;
+	vk::raii::DeviceMemory vertexBufferMemory = nullptr;
+
 	vk::raii::CommandPool commandPool = nullptr;
 	uint32_t graphicsIndex = 0;
 	std::vector<vk::raii::CommandBuffer> commandBuffers;
