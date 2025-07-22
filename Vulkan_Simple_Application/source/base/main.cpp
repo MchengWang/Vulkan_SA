@@ -442,7 +442,7 @@ private:
 			.rasterizerDiscardEnable = vk::False,
 			.polygonMode = vk::PolygonMode::eFill,
 			.cullMode = vk::CullModeFlagBits::eBack,
-			.frontFace = vk::FrontFace::eClockwise,
+			.frontFace = vk::FrontFace::eCounterClockwise,
 			.depthBiasEnable = vk::False,
 			.depthBiasSlopeFactor = 1.0f,
 			.lineWidth = 1.0f
@@ -486,7 +486,8 @@ private:
 
 		vk::PipelineLayoutCreateInfo pipelineLayoutInfo
 		{
-			.setLayoutCount = 0,
+			.setLayoutCount = 1,
+			.pSetLayouts = &*descriptorSetLayout,
 			.pushConstantRangeCount = 0
 		};
 
