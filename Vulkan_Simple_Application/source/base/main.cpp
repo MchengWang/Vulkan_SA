@@ -132,6 +132,7 @@ private:
 		createCommandPool();
 		createTextureImage();
 		createTextureImageView();
+		createTextureSampler();
 		createVertexBuffer();
 		createIndexBuffer();
 		createUniformBuffers();
@@ -251,7 +252,8 @@ private:
 
 				auto features = device.template getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
 				bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
-					features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
+												features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState &&
+												features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy;
 
 				return supprotsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
 			});
@@ -369,7 +371,8 @@ private:
 
 	void createImageViews()
 	{
-		vk::ImageViewCreateInfo imageViewCreateInfo{
+		vk::ImageViewCreateInfo imageViewCreateInfo
+		{
 			.viewType = vk::ImageViewType::e2D,
 			.format = swapChainImageFormat,
 			.subresourceRange = {
@@ -563,7 +566,28 @@ private:
 
 	void createTextureImageView()
 	{
+		textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb);
+	}
 
+	void createTextureSampler()
+	{
+		vk::PhysicalDeviceProperties properties = physicalDevice.getProperties();
+		vk::SamplerCreateInfo samplerInfo
+		{
+			.magFilter = vk::Filter::eLinear,
+			.minFilter = vk::Filter::eLinear,
+			.mipmapMode = vk::SamplerMipmapMode::eLinear,
+			.addressModeU = vk::SamplerAddressMode::eRepeat,
+			.addressModeV = vk::SamplerAddressMode::eRepeat,
+			.addressModeW = vk::SamplerAddressMode::eRepeat,
+			.mipLodBias = 0.0f,
+			.anisotropyEnable = vk::True,
+			.maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+			.compareEnable = vk::False,
+			.compareOp = vk::CompareOp::eAlways
+		};
+
+		textureSampler = vk::raii::Sampler(device, samplerInfo);
 	}
 
 	void createVertexBuffer()
@@ -875,6 +899,22 @@ private:
 		commandBuffer->begin(beginInfo);
 
 		return commandBuffer;
+	}
+
+	vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format)
+	{
+		vk::ImageViewCreateInfo viewInfo
+		{
+			.image = image,
+			.viewType = vk::ImageViewType::e2D,
+			.format = format,
+			.subresourceRange = {
+				vk::ImageAspectFlagBits::eColor,
+				0, 1, 0, 1
+			}
+		};
+
+		return vk::raii::ImageView(device, viewInfo);
 	}
 
 	void endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffer)
@@ -1203,6 +1243,7 @@ private:
 	vk::raii::Image textureImage = nullptr;
 	vk::raii::ImageView textureImageView = nullptr;
 	vk::raii::DeviceMemory textureImageMemory = nullptr;
+	vk::raii::Sampler textureSampler = nullptr;
 
 	vk::raii::Buffer vertexBuffer = nullptr;
 	vk::raii::DeviceMemory vertexBufferMemory = nullptr;
