@@ -11,8 +11,11 @@ Vulkan_SDK = os.getenv("VULKAN_SDK")
 
 outdir = "%{cfg.buildcfg}"
 
+third_party_path = "%{prj.name}/third_party"
+
 IncludeDir = {}
-IncludeDir["GLFW"] = "%{prj.name}/third_party/glfw"
+IncludeDir["GLFW"] = third_party_path .. "/glfw"
+IncludeDir["STB_IMAGE"] = third_party_path .. "/stb_image"
 
 project "Vulkan_Simple_Application"
 	kind "ConsoleApp"
@@ -26,8 +29,12 @@ project "Vulkan_Simple_Application"
 	{
 		"%{prj.name}/source/**.cpp",
 		"%{prj.name}/source/**.h",
-		"%{prj.name}/third_party/glm/**.hpp",
-		"%{prj.name}/third_party/glm/**.inl",
+
+		third_party_path .. "/glm/**.hpp",
+		third_party_path .. "/glm/**.inl",
+		third_party_path .. "/stb_image/*.h",
+		third_party_path .. "/stb_image/*.cpp",
+
 		"%{Vulkan_SDK}/Include/vulkan/vulkan.cppm",
 	}
 
@@ -37,6 +44,7 @@ project "Vulkan_Simple_Application"
 		"%{prj.name}/third_party",
 
 		"%{IncludeDir.GLFW}/include",
+		"%{IncludeDir.STB_IMAGE}",
 		"%{Vulkan_SDK}/Include",
 	}
 
