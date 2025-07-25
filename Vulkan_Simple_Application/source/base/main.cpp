@@ -26,6 +26,7 @@ import vulkan_hpp;
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -49,7 +50,7 @@ constexpr bool enableValidationLayers = true;
 
 struct Vertex
 {
-	glm::vec2 pos;
+	glm::vec3 pos;
 	glm::vec3 color;
 	glm::vec2 texCoord;
 
@@ -61,7 +62,7 @@ struct Vertex
 	static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions()
 	{
 		return {
-			vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, pos)),
+			vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos)),
 			vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
 			vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texCoord))
 		};
@@ -76,14 +77,20 @@ struct UniformBufferObject
 };
 
 const std::vector<Vertex> vertices = {
-	{ {-0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f }},
-	{ {0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f }},
-	{ {0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f }},
-	{ {-0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f }}
+	{ {-0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f }},
+	{ {0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f }},
+	{ {0.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f }},
+	{ {-0.5f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f }},
+
+	{{-0.5f, -0.5f, -0.5f }, {1.0f, 0.0f, 0.0f }, {0.0f, 0.0f}},
+	{{0.5f, -0.5f, -0.5f }, {0.0f, 1.0f, 0.0f }, {1.0f, 0.0f}},
+	{{0.5f, 0.5f, -0.5f }, {0.0f, 0.0f, 1.0f }, {1.0f, 1.0f}},
+	{{-0.5f, 0.5f, -0.5f }, {1.0f, 1.0f, 1.0f }, {0.0f, 1.0f}},
 };
 
 const std::vector<uint16_t> indices = {
-	0, 1, 2, 2, 3, 0
+	0, 1, 2, 2, 3, 0,
+	4, 5, 6, 6, 7, 4
 };
 
 class Triangle
@@ -132,6 +139,7 @@ private:
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createCommandPool();
+		createDepthResources();
 		createTextureImage();
 		createTextureImageView();
 		createTextureSampler();
@@ -408,7 +416,7 @@ private:
 
 	void createGraphicsPipeline()
 	{
-		vk::raii::ShaderModule shaderModule = createShaderModule(readFile("resources/shaders/slang_textures.spv"));
+		vk::raii::ShaderModule shaderModule = createShaderModule(readFile("resources/shaders/slang_depth.spv"));
 
 		vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
 			.stage = vk::ShaderStageFlagBits::eVertex,
@@ -543,6 +551,15 @@ private:
 		commandPool = vk::raii::CommandPool(device, poolInfo);
 	}
 
+	void createDepthResources()
+	{
+		vk::Format depthFormat = findDepthFormat();
+
+		createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, depthImage, depthImageMemory);
+		
+		depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+	}
+
 	void createTextureImage()
 	{
 		int texWidth, texHeight, texChannels;
@@ -572,7 +589,7 @@ private:
 
 	void createTextureImageView()
 	{
-		textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb);
+		textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 	}
 
 	void createTextureSampler()
@@ -869,6 +886,30 @@ private:
 		image.bindMemory(imageMemory, 0);
 	}
 
+	vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
+	{
+		auto formatIt = std::ranges::find_if(candidates, [&](auto const format)
+			{
+				vk::FormatProperties props = physicalDevice.getFormatProperties(format);
+				return (((tiling == vk::ImageTiling::eLinear) && ((props.linearTilingFeatures & features) == features)) ||
+					((tiling == vk::ImageTiling::eOptimal) && ((props.optimalTilingFeatures & features) == features)));
+			});
+
+		if (formatIt == candidates.end())
+			throw std::runtime_error("failed to find supported format!");
+
+		return *formatIt;
+	}
+
+	vk::Format findDepthFormat()
+	{
+		return findSupportedFormat(
+			{vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint},
+			vk::ImageTiling::eOptimal,
+			vk::FormatFeatureFlagBits::eDepthStencilAttachment
+		);
+	}
+
 	void transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout)
 	{
 		auto commandBuffer = beginSingleTimeCommands();
@@ -930,7 +971,7 @@ private:
 		return commandBuffer;
 	}
 
-	vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format)
+	vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format, vk::ImageAspectFlags aspectFlags)
 	{
 		vk::ImageViewCreateInfo viewInfo
 		{
@@ -938,7 +979,7 @@ private:
 			.viewType = vk::ImageViewType::e2D,
 			.format = format,
 			.subresourceRange = {
-				vk::ImageAspectFlagBits::eColor,
+				aspectFlags,
 				0, 1, 0, 1
 			}
 		};
@@ -1051,6 +1092,7 @@ private:
 		cleanupSwapChain();
 		createSwapChain();
 		createImageViews();
+		createDepthResources();
 	}
 
 	void cleanupSwapChain()
@@ -1268,6 +1310,10 @@ private:
 	vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
 	vk::raii::Pipeline graphicsPipeline = nullptr;
+
+	vk::raii::Image depthImage = nullptr;
+	vk::raii::DeviceMemory depthImageMemory = nullptr;
+	vk::raii::ImageView depthImageView = nullptr;
 
 	vk::raii::Image textureImage = nullptr;
 	vk::raii::ImageView textureImageView = nullptr;
