@@ -16,6 +16,7 @@ third_party_path = "%{prj.name}/third_party"
 IncludeDir = {}
 IncludeDir["GLFW"] = third_party_path .. "/glfw"
 IncludeDir["STB_IMAGE"] = third_party_path .. "/stb_image"
+IncludeDir["TINY_OBJ_LOADER"] = third_party_path .. "/tinyobjloader"
 
 project "Vulkan_Simple_Application"
 	kind "ConsoleApp"
@@ -32,8 +33,8 @@ project "Vulkan_Simple_Application"
 
 		third_party_path .. "/glm/**.hpp",
 		third_party_path .. "/glm/**.inl",
-		third_party_path .. "/stb_image/*.h",
-		third_party_path .. "/stb_image/*.cpp",
+		"%{IncludeDir.STB_IMAGE}/*.h",
+		"%{IncludeDir.TINY_OBJ_LOADER}/*.h",
 
 		"%{Vulkan_SDK}/Include/vulkan/vulkan.cppm",
 	}
@@ -45,6 +46,7 @@ project "Vulkan_Simple_Application"
 
 		"%{IncludeDir.GLFW}/include",
 		"%{IncludeDir.STB_IMAGE}",
+		"%{IncludeDir.TINY_OBJ_LOADER}",
 		"%{Vulkan_SDK}/Include",
 	}
 
@@ -64,6 +66,8 @@ project "Vulkan_Simple_Application"
 	{
 		"GLFW_INCLUDE_VULKAN",
 		"VULKAN_HPP_NO_STRUCT_CONSTRUCTORS",
+		"STB_IMAGE_IMPLEMENTATION",
+		"TINYOBJLOADER_IMPLEMENTATION",
 	}
 
 	filter "configurations:DebugX64"
