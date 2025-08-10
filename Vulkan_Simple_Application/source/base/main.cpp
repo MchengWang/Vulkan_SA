@@ -1631,7 +1631,7 @@ private:
 
 };
 
-int main()
+int main2()
 {
 	try
 	{
