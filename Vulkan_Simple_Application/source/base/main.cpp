@@ -23,6 +23,7 @@ import vulkan_hpp;
 #endif // __INTELLISENSE__
 
 #include <vulkan/vk_platform.h>
+#include <vulkan/vulkan_profiles.hpp>
 
 #include <GLFW/glfw3.h>
 
@@ -56,9 +57,8 @@ constexpr bool enableValidationLayers = true;
 
 struct AppInfo
 {
-	bool dynamicRenderingSupported = false;
-	bool timelineSemaphoresSupported = false;
-	bool synchronization2Supported = false;
+	bool profileSupported = false;
+	VpProfileProperties profile;
 };
 
 struct Vertex
@@ -162,19 +162,20 @@ private:
 		createSurface();
 		pickPhysicalDevice();
 		msaaSamples = getMaxUsableSampleCount();
-		detectFeatureSupport();
+		checkFeatureSupport();
 		createLogicalDevice();
 		createSwapChain();
 		createImageViews();
 
-		if (!appInfo.dynamicRenderingSupported)
-		{
+		if (!appInfo.profileSupported)
 			createRenderPass();
-			createFramebuffers();
-		}
 
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
+
+		if (!appInfo.profileSupported)
+			createFramebuffers();
+
 		createCommandPool();
 		createColorResources();
 		createDepthResources();
@@ -189,11 +190,6 @@ private:
 		createDescriptorSets();
 		createCommandBuffers();
 		createSyncObjects();
-
-		std::cout << "\nFeature support summary:\n";
-		std::cout << "- Dynamic Rendering: " << (appInfo.dynamicRenderingSupported ? "Yes" : "No") << "\n";
-		std::cout << "- Timeline Semaphores: " << (appInfo.timelineSemaphoresSupported ? "Yes" : "No") << "\n";
-		std::cout << "- Synchronization2: " << (appInfo.synchronization2Supported ? "Yes" : "No") << "\n";
 	}
 
 	void createInstance()
@@ -417,14 +413,6 @@ private:
 
 	void createRenderPass()
 	{
-		if (appInfo.dynamicRenderingSupported)
-		{
-			std::cout << "Using dynamic rendering, skipping render pass creation\n";
-			return;
-		}
-
-		std::cout << "Creating traditional render pass\n";
-
 		vk::AttachmentDescription colorAttachment
 		{
 			.format = swapChainImageFormat,
@@ -514,14 +502,6 @@ private:
 
 	void createFramebuffers()
 	{
-		if (appInfo.dynamicRenderingSupported)
-		{
-			std::cout << "Using dynamic rendering, skipping render pass creation\n";
-			return;
-		}
-
-		std::cout << "Creating traditional framebuffers\n";
-
 		swapChainFramebuffers.clear();
 
 		for (size_t i = 0; i < swapChainImageViews.size(); i++)
@@ -687,24 +667,30 @@ private:
 			.layout = pipelineLayout,
 		};
 
-		vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo;
-		if (appInfo.dynamicRenderingSupported)
+		if (appInfo.profileSupported)
 		{
-			std::cout << "Configuration pipeline for dynamic rendering\n";
-			pipelineRenderingCreateInfo.colorAttachmentCount = 1;
-			pipelineRenderingCreateInfo.pColorAttachmentFormats = &swapChainImageFormat;
-			pipelineRenderingCreateInfo.depthAttachmentFormat = findDepthFormat();
-			
-			pipelineInfo.pNext = &pipelineRenderingCreateInfo;
+			vk::Format colorFormat = swapChainImageFormat;
+			vk::Format depthFormat = findDepthFormat();
+
+			vk::PipelineRenderingCreateInfo renderingInfo
+			{
+				.colorAttachmentCount = 1,
+				.pColorAttachmentFormats = &colorFormat,
+				.depthAttachmentFormat = depthFormat
+			};
+
+			pipelineInfo.pNext = &renderingInfo;
 			pipelineInfo.renderPass = nullptr;
+
+			std::cout << "Creating pipeline with dynamic rendering (KHR roadmap 2022 profile)" << std::endl;
 		}
 		else
 		{
-			std::cout << "Configuration pipeline for traditional render pass\n";
-
 			pipelineInfo.pNext = nullptr;
 			pipelineInfo.renderPass = *renderPass;
 			pipelineInfo.subpass = 0;
+
+			std::cout << "Create pipeline with traditional render pass (fallback)" << std::endl;
 		}
 
 		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
@@ -1083,74 +1069,32 @@ private:
 * helper functions
 */
 private:
-	void detectFeatureSupport()
+	void checkFeatureSupport()
 	{
-		vk::PhysicalDeviceProperties deviceProperties = physicalDevice.getProperties();
-
-		std::vector<vk::ExtensionProperties> availableExtensions = physicalDevice.enumerateDeviceExtensionProperties();
-
-		if (deviceProperties.apiVersion >= VK_VERSION_1_3)
+		appInfo.profile =
 		{
-			appInfo.dynamicRenderingSupported = true;
-			std::cout << "Dynamic rendering supported via Vulkan1.3\n";
+			VP_KHR_ROADMAP_2022_NAME,
+			VP_KHR_ROADMAP_2022_SPEC_VERSION
+		};
+
+		VkBool32 supported = VK_FALSE;
+		VkResult result = vpGetPhysicalDeviceProfileSupport(
+			*instance,
+			*physicalDevice,
+			&appInfo.profile,
+			&supported
+		);
+
+		if (result == VK_SUCCESS && supported == VK_TRUE)
+		{
+			appInfo.profileSupported = true;
+			std::cout << "Using KHR roadmap 2022 profile" << std::endl;
 		}
 		else
 		{
-			for (const auto& extension : availableExtensions)
-			{
-				if (strcmp(extension.extensionName, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) == 0)
-				{
-					appInfo.dynamicRenderingSupported = true;
-					std::cout << "Dynamic rendering supported via Vulkan\n";
-					break;
-				}
-			}
+			appInfo.profileSupported = false;
+			std::cout << "Falling back to traditional rendering (profile not supported)" << std::endl;
 		}
-
-		if (deviceProperties.apiVersion >= VK_VERSION_1_2)
-		{
-			appInfo.timelineSemaphoresSupported = true;
-			std::cout << "Timeline semaphores supported via Vulkan1.2\n";
-		}
-		else
-		{
-			for (const auto& extension : availableExtensions)
-			{
-				if (strcmp(extension.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) == 0)
-				{
-					appInfo.timelineSemaphoresSupported = true;
-					std::cout << "Timeline semaphores supported via Vulkan\n";
-					break;
-				}
-			}
-		}
-
-		if (deviceProperties.apiVersion >= VK_VERSION_1_3)
-		{
-			appInfo.synchronization2Supported = true;
-			std::cout << "Synchronization2 supported via Vulkan1.3\n";
-		}
-		else
-		{
-			for (const auto& extension : availableExtensions)
-			{
-				if (strcmp(extension.extensionName, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) == 0)
-				{
-					appInfo.synchronization2Supported = true;
-					std::cout << "Synchronization2 supported via Vulkan\n";
-					break;
-				}
-			}
-		}
-
-		if (appInfo.dynamicRenderingSupported && deviceProperties.apiVersion < VK_VERSION_1_3)
-			requiredDeviceExtension.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
-
-		if (appInfo.timelineSemaphoresSupported && deviceProperties.apiVersion < VK_VERSION_1_2)
-			requiredDeviceExtension.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
-
-		if (appInfo.synchronization2Supported && deviceProperties.apiVersion < VK_VERSION_1_3)
-			requiredDeviceExtension.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
 	}
 
 	void generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
@@ -1480,7 +1424,7 @@ private:
 		createSwapChain();
 		createImageViews();
 
-		if (!appInfo.dynamicRenderingSupported)
+		if (!appInfo.profileSupported)
 		{
 			createRenderPass();
 			createFramebuffers();
@@ -1499,114 +1443,46 @@ private:
 	{
 		commandBuffers[currentFrame].begin({});
 
-		vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
-		vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
+		// Transition the swapchain image to the correct layout for rendering
+		vk::ImageMemoryBarrier imageBarrier{
+			.srcAccessMask = vk::AccessFlagBits::eNone,
+			.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+			.oldLayout = vk::ImageLayout::eUndefined,
+			.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = swapChainImages[imageIndex],
+			.subresourceRange = {
+				.aspectMask = vk::ImageAspectFlagBits::eColor,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1
+			}
+		};
+
+		commandBuffers[currentFrame].pipelineBarrier(
+			vk::PipelineStageFlagBits::eTopOfPipe,
+			vk::PipelineStageFlagBits::eColorAttachmentOutput,
+			vk::DependencyFlagBits::eByRegion,
+			std::array<vk::MemoryBarrier, 0>{},
+			std::array<vk::BufferMemoryBarrier, 0>{},
+			std::array<vk::ImageMemoryBarrier, 1>{imageBarrier}
+		);
+
+		// Clear values for color and depth
+		vk::ClearValue clearColor{};
+		clearColor.color = vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+
+		vk::ClearValue clearDepth{};
+		clearDepth.depthStencil = vk::ClearDepthStencilValue{ 1.0f, 0 };
+
 		std::array<vk::ClearValue, 2> clearValues = { clearColor, clearDepth };
 
-		if (appInfo.dynamicRenderingSupported)
-		{
-			// Transition attachments to the correct layout
-			if (appInfo.synchronization2Supported) 
-			{
-				// Use Synchronization2 API for image transitions
-				vk::ImageMemoryBarrier2 colorBarrier
-				{
-					.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe,
-					.srcAccessMask = vk::AccessFlagBits2::eNone,
-					.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-					.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
-					.oldLayout = vk::ImageLayout::eUndefined,
-					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-					.image = *colorImage,
-					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
-				};
-
-				vk::ImageMemoryBarrier2 depthBarrier
-				{
-					.srcStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
-					.srcAccessMask = vk::AccessFlagBits2::eNone,
-					.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
-					.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
-					.oldLayout = vk::ImageLayout::eUndefined,
-					.newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-					.image = *depthImage,
-					.subresourceRange = { vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1 }
-				};
-
-				vk::ImageMemoryBarrier2 swapchainBarrier
-				{
-					.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe,
-					.srcAccessMask = vk::AccessFlagBits2::eNone,
-					.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-					.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
-					.oldLayout = vk::ImageLayout::eUndefined,
-					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-					.image = swapChainImages[imageIndex],
-					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
-				};
-
-				std::array<vk::ImageMemoryBarrier2, 3> barriers = { colorBarrier, depthBarrier, swapchainBarrier };
-				vk::DependencyInfo dependencyInfo
-				{
-					.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size()),
-					.pImageMemoryBarriers = barriers.data()
-				};
-
-				commandBuffers[currentFrame].pipelineBarrier2(dependencyInfo);
-			}
-			else 
-			{
-				// Use traditional synchronization API
-				vk::ImageMemoryBarrier colorBarrier
-				{
-					.srcAccessMask = vk::AccessFlagBits::eNone,
-					.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-					.oldLayout = vk::ImageLayout::eUndefined,
-					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = *colorImage,
-					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
-				};
-
-				vk::ImageMemoryBarrier depthBarrier
-				{
-					.srcAccessMask = vk::AccessFlagBits::eNone,
-					.dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-					.oldLayout = vk::ImageLayout::eUndefined,
-					.newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = *depthImage,
-					.subresourceRange = { vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1 }
-				};
-
-				vk::ImageMemoryBarrier swapchainBarrier
-				{
-					.srcAccessMask = vk::AccessFlagBits::eNone,
-					.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-					.oldLayout = vk::ImageLayout::eUndefined,
-					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = swapChainImages[imageIndex],
-					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
-				};
-
-				std::array<vk::ImageMemoryBarrier, 3> barriers = { colorBarrier, depthBarrier, swapchainBarrier };
-				commandBuffers[currentFrame].pipelineBarrier(
-					vk::PipelineStageFlagBits::eTopOfPipe,
-					vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-					vk::DependencyFlagBits::eByRegion,
-					{},
-					{},
-					barriers
-				);
-			}
-
-			// Setup rendering attachments
-			vk::RenderingAttachmentInfo colorAttachment
-			{
+		// Use different rendering approach based on profile support
+		if (appInfo.profileSupported) {
+			// Use dynamic rendering with the KHR roadmap 2022 profile
+			vk::RenderingAttachmentInfo colorAttachment{
 				.imageView = *colorImageView,
 				.imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
 				.resolveMode = vk::ResolveModeFlagBits::eAverage,
@@ -1617,8 +1493,7 @@ private:
 				.clearValue = clearColor
 			};
 
-			vk::RenderingAttachmentInfo depthAttachment
-			{
+			vk::RenderingAttachmentInfo depthAttachment{
 				.imageView = *depthImageView,
 				.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
 				.loadOp = vk::AttachmentLoadOp::eClear,
@@ -1626,8 +1501,7 @@ private:
 				.clearValue = clearDepth
 			};
 
-			vk::RenderingInfo renderingInfo
-			{
+			vk::RenderingInfo renderingInfo{
 				.renderArea = {{0, 0}, swapChainExtent},
 				.layerCount = 1,
 				.colorAttachmentCount = 1,
@@ -1636,13 +1510,11 @@ private:
 			};
 
 			commandBuffers[currentFrame].beginRendering(renderingInfo);
+
 		}
 		else {
-			// Use traditional render pass
-			std::cout << "Recording command buffer with traditional render pass\n";
-
-			vk::RenderPassBeginInfo renderPassInfo
-			{
+			// Use traditional render pass if not using the KHR roadmap 2022 profile
+			vk::RenderPassBeginInfo renderPassInfo{
 				.renderPass = *renderPass,
 				.framebuffer = *swapChainFramebuffers[imageIndex],
 				.renderArea = {{0, 0}, swapChainExtent},
@@ -1651,72 +1523,66 @@ private:
 			};
 
 			commandBuffers[currentFrame].beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
 		}
 
-		// Common rendering commands
 		commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
-		commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
-		commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
+
+		vk::Viewport viewport{
+			.x = 0.0f,
+			.y = 0.0f,
+			.width = static_cast<float>(swapChainExtent.width),
+			.height = static_cast<float>(swapChainExtent.height),
+			.minDepth = 0.0f,
+			.maxDepth = 1.0f
+		};
+		commandBuffers[currentFrame].setViewport(0, viewport);
+
+		vk::Rect2D scissor{
+			.offset = {0, 0},
+			.extent = swapChainExtent
+		};
+		commandBuffers[currentFrame].setScissor(0, scissor);
+
 		commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, { 0 });
 		commandBuffers[currentFrame].bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
-		commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *descriptorSets[currentFrame], nullptr);
-		commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
+		commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0, *descriptorSets[currentFrame], nullptr);
+		commandBuffers[currentFrame].drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
-		if (appInfo.dynamicRenderingSupported) 
-		{
+		if (appInfo.profileSupported) {
 			commandBuffers[currentFrame].endRendering();
 
-			// Transition swapchain image to present layout
-			if (appInfo.synchronization2Supported) 
-			{
-				vk::ImageMemoryBarrier2 barrier
-				{
-					.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-					.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
-					.dstStageMask = vk::PipelineStageFlagBits2::eBottomOfPipe,
-					.dstAccessMask = vk::AccessFlagBits2::eNone,
-					.oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
-					.newLayout = vk::ImageLayout::ePresentSrcKHR,
-					.image = swapChainImages[imageIndex],
-					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
-				};
+			// Transition the swapchain image to the correct layout for presentation
+			vk::ImageMemoryBarrier barrier{
+				.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+				.dstAccessMask = vk::AccessFlagBits::eNone,
+				.oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+				.newLayout = vk::ImageLayout::ePresentSrcKHR,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = swapChainImages[imageIndex],
+				.subresourceRange = {
+					.aspectMask = vk::ImageAspectFlagBits::eColor,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1
+				}
+			};
 
-				vk::DependencyInfo dependencyInfo
-				{
-					.imageMemoryBarrierCount = 1,
-					.pImageMemoryBarriers = &barrier
-				};
-
-				commandBuffers[currentFrame].pipelineBarrier2(dependencyInfo);
-			}
-			else 
-			{
-				vk::ImageMemoryBarrier barrier
-				{
-					.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-					.dstAccessMask = vk::AccessFlagBits::eNone,
-					.oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
-					.newLayout = vk::ImageLayout::ePresentSrcKHR,
-					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-					.image = swapChainImages[imageIndex],
-					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
-				};
-
-				commandBuffers[currentFrame].pipelineBarrier
-				(
-					vk::PipelineStageFlagBits::eColorAttachmentOutput,
-					vk::PipelineStageFlagBits::eBottomOfPipe,
-					vk::DependencyFlagBits::eByRegion,
-					{},
-					{},
-					{ barrier }
-				);
-			}
+			commandBuffers[currentFrame].pipelineBarrier(
+				vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				vk::PipelineStageFlagBits::eBottomOfPipe,
+				vk::DependencyFlagBits::eByRegion,
+				std::array<vk::MemoryBarrier, 0>{},
+				std::array<vk::BufferMemoryBarrier, 0>{},
+				std::array<vk::ImageMemoryBarrier, 1>{barrier}
+			);
 		}
-		else 
+		else {
 			commandBuffers[currentFrame].endRenderPass();
-		
+			// Traditional render pass already transitions the image to the correct layout
+		}
 
 		commandBuffers[currentFrame].end();
 	}
@@ -1882,7 +1748,7 @@ private:
 * private variables (private functions calls only)
 */
 private:
-	AppInfo appInfo;
+	AppInfo appInfo = {};
 
 	GLFWwindow* window = nullptr;
 
