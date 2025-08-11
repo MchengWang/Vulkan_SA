@@ -47,16 +47,19 @@ const std::string TITLE = "TRIANGLE";
 const std::string MODEL_PATH = "resources/models/viking_room.obj";
 const std::string TEXTURE_PATH = "resources/textures/viking_room.png";
 
-const std::vector validationLayers = {
-	"VK_LAYER_KHRONOS_validation"
-};
-
 #ifdef NDEBUG
 constexpr bool enableValidationLayers = false;
 #else
 constexpr bool enableValidationLayers = true;
 #endif // NDEBUG
 
+
+struct AppInfo
+{
+	bool dynamicRenderingSupported = false;
+	bool timelineSemaphoresSupported = false;
+	bool synchronization2Supported = false;
+};
 
 struct Vertex
 {
@@ -159,9 +162,17 @@ private:
 		createSurface();
 		pickPhysicalDevice();
 		msaaSamples = getMaxUsableSampleCount();
+		detectFeatureSupport();
 		createLogicalDevice();
 		createSwapChain();
 		createImageViews();
+
+		if (!appInfo.dynamicRenderingSupported)
+		{
+			createRenderPass();
+			createFramebuffers();
+		}
+
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createCommandPool();
@@ -178,6 +189,11 @@ private:
 		createDescriptorSets();
 		createCommandBuffers();
 		createSyncObjects();
+
+		std::cout << "\nFeature support summary:\n";
+		std::cout << "- Dynamic Rendering: " << (appInfo.dynamicRenderingSupported ? "Yes" : "No") << "\n";
+		std::cout << "- Timeline Semaphores: " << (appInfo.timelineSemaphoresSupported ? "Yes" : "No") << "\n";
+		std::cout << "- Synchronization2: " << (appInfo.synchronization2Supported ? "Yes" : "No") << "\n";
 	}
 
 	void createInstance()
@@ -193,41 +209,14 @@ private:
 			.apiVersion = vk::ApiVersion14
 		};
 
-		// 获取需要的表示层
-		std::vector<char const*> requiredLayers;
-		if (enableValidationLayers)
-			requiredLayers.assign(validationLayers.begin(), validationLayers.end());
-
-		// 检查 Vulkan 实现是否支持所需要的表示层
-		auto layerProperties = context.enumerateInstanceLayerProperties();
-		for (auto const& requiredLayer : requiredLayers)
-		{
-			if (std::ranges::none_of(layerProperties, [requiredLayer](auto const& layerProperty)
-				{
-					return strcmp(layerProperty.layerName, requiredLayer) == 0;
-				}))
-				throw std::runtime_error("Required layer nor supported: " + std::string(requiredLayer));
-		}
 
 		// 从 GLFW 获取所需的实例扩展。
-		auto requiredExtensions = getRequiredExtensions();
-
-		// 检查 Vulkan 实现是否支持所需的 GLFW 扩展。
-		auto extensionProperties = context.enumerateInstanceExtensionProperties();
-		for (auto const& requiredExtension : requiredExtensions)
-		{
-			if (std::ranges::none_of(extensionProperties,
-				[requiredExtension](auto const& extensionProperty)
-				{ return strcmp(extensionProperty.extensionName, requiredExtension) == 0; }))
-				throw std::runtime_error("Required GLFW extension not supported: " + std::string(requiredExtension));
-		}
+		auto extensions = getRequiredExtensions();
 
 		vk::InstanceCreateInfo createInfo{
 			.pApplicationInfo = &appInfo,
-			.enabledLayerCount = static_cast<uint32_t>(requiredLayers.size()),
-			.ppEnabledLayerNames = requiredLayers.data(),
-			.enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size()),
-			.ppEnabledExtensionNames = requiredExtensions.data(),
+			.enabledExtensionCount = static_cast<uint32_t>(extensions.size()),
+			.ppEnabledExtensionNames = extensions.data(),
 		};
 
 		instance = vk::raii::Instance(context, createInfo);
@@ -426,6 +415,137 @@ private:
 		}
 	}
 
+	void createRenderPass()
+	{
+		if (appInfo.dynamicRenderingSupported)
+		{
+			std::cout << "Using dynamic rendering, skipping render pass creation\n";
+			return;
+		}
+
+		std::cout << "Creating traditional render pass\n";
+
+		vk::AttachmentDescription colorAttachment
+		{
+			.format = swapChainImageFormat,
+			.samples = msaaSamples,
+			.loadOp = vk::AttachmentLoadOp::eClear,
+			.storeOp = vk::AttachmentStoreOp::eStore,
+			.stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+			.stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+			.initialLayout = vk::ImageLayout::eUndefined,
+			.finalLayout = vk::ImageLayout::eColorAttachmentOptimal
+		};
+
+		vk::AttachmentDescription depthAttachment
+		{
+			.format = findDepthFormat(),
+			.samples = msaaSamples,
+			.loadOp = vk::AttachmentLoadOp::eClear,
+			.storeOp = vk::AttachmentStoreOp::eDontCare,
+			.stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+			.stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+			.initialLayout = vk::ImageLayout::eUndefined,
+			.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal
+		};
+
+		vk::AttachmentDescription colorAttachmentResolve
+		{
+			.format = swapChainImageFormat,
+			.samples = vk::SampleCountFlagBits::e1,
+			.loadOp = vk::AttachmentLoadOp::eDontCare,
+			.storeOp = vk::AttachmentStoreOp::eStore,
+			.stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+			.stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+			.initialLayout = vk::ImageLayout::eUndefined,
+			.finalLayout = vk::ImageLayout::ePresentSrcKHR
+		};
+
+		vk::AttachmentReference colorAttachmentRef
+		{
+			.attachment = 0,
+			.layout = vk::ImageLayout::eColorAttachmentOptimal
+		};
+
+		vk::AttachmentReference depthAttachmentRef
+		{
+			.attachment = 1,
+			.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal
+		};
+
+		vk::AttachmentReference colorAttachmentResolveRef
+		{
+			.attachment = 2,
+			.layout = vk::ImageLayout::eColorAttachmentOptimal
+		};
+
+		vk::SubpassDescription subpass
+		{
+			.pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
+			.colorAttachmentCount = 1,
+			.pColorAttachments = &colorAttachmentRef,
+			.pResolveAttachments = &colorAttachmentResolveRef,
+			.pDepthStencilAttachment = &depthAttachmentRef
+		};
+
+		vk::SubpassDependency dependency
+		{
+			.srcSubpass = VK_SUBPASS_EXTERNAL,
+			.dstSubpass = 0,
+			.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+			.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+			.srcAccessMask = vk::AccessFlagBits::eNone,
+			.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite
+		};
+
+		std::array attachments = { colorAttachment, depthAttachment, colorAttachmentResolve };
+		vk::RenderPassCreateInfo renderPassInfo
+		{
+			.attachmentCount = static_cast<uint32_t>(attachments.size()),
+			.pAttachments = attachments.data(),
+			.subpassCount = 1,
+			.pSubpasses = &subpass,
+			.dependencyCount = 1,
+			.pDependencies = &dependency
+		};
+
+		renderPass = vk::raii::RenderPass(device, renderPassInfo);
+	}
+
+	void createFramebuffers()
+	{
+		if (appInfo.dynamicRenderingSupported)
+		{
+			std::cout << "Using dynamic rendering, skipping render pass creation\n";
+			return;
+		}
+
+		std::cout << "Creating traditional framebuffers\n";
+
+		swapChainFramebuffers.clear();
+
+		for (size_t i = 0; i < swapChainImageViews.size(); i++)
+		{
+			std::array attachments = {
+				*colorImageView,
+				*depthImageView,
+				*swapChainImageViews[i]
+			};
+
+			vk::FramebufferCreateInfo framebufferInfo
+			{
+				.renderPass = *renderPass,
+				.attachmentCount = static_cast<uint32_t>(attachments.size()),
+				.pAttachments = attachments.data(),
+				.width = swapChainExtent.width,
+				.height = swapChainExtent.height,
+				.layers = 1
+			};
+
+			swapChainFramebuffers.emplace_back(device, framebufferInfo);
+		}
+	}
+
 	void createDescriptorSetLayout()
 	{
 		std::array bindings = {
@@ -552,19 +672,8 @@ private:
 
 		pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
-		vk::Format depthFormat = findDepthFormat();
-
-		// 渲染
-		vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo
-		{
-			.colorAttachmentCount = 1,
-			.pColorAttachmentFormats = &swapChainImageFormat,
-			.depthAttachmentFormat = depthFormat
-		};
-
 		vk::GraphicsPipelineCreateInfo pipelineInfo
 		{
-			.pNext = &pipelineRenderingCreateInfo,
 			.stageCount = 2,
 			.pStages = shaderStages,
 			.pVertexInputState = &vertexInputInfo,
@@ -576,8 +685,27 @@ private:
 			.pColorBlendState = &colorBlending,
 			.pDynamicState = &dynamicState,
 			.layout = pipelineLayout,
-			.renderPass = nullptr
 		};
+
+		vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo;
+		if (appInfo.dynamicRenderingSupported)
+		{
+			std::cout << "Configuration pipeline for dynamic rendering\n";
+			pipelineRenderingCreateInfo.colorAttachmentCount = 1;
+			pipelineRenderingCreateInfo.pColorAttachmentFormats = &swapChainImageFormat;
+			pipelineRenderingCreateInfo.depthAttachmentFormat = findDepthFormat();
+			
+			pipelineInfo.pNext = &pipelineRenderingCreateInfo;
+			pipelineInfo.renderPass = nullptr;
+		}
+		else
+		{
+			std::cout << "Configuration pipeline for traditional render pass\n";
+
+			pipelineInfo.pNext = nullptr;
+			pipelineInfo.renderPass = *renderPass;
+			pipelineInfo.subpass = 0;
+		}
 
 		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
 	}
@@ -955,6 +1083,76 @@ private:
 * helper functions
 */
 private:
+	void detectFeatureSupport()
+	{
+		vk::PhysicalDeviceProperties deviceProperties = physicalDevice.getProperties();
+
+		std::vector<vk::ExtensionProperties> availableExtensions = physicalDevice.enumerateDeviceExtensionProperties();
+
+		if (deviceProperties.apiVersion >= VK_VERSION_1_3)
+		{
+			appInfo.dynamicRenderingSupported = true;
+			std::cout << "Dynamic rendering supported via Vulkan1.3\n";
+		}
+		else
+		{
+			for (const auto& extension : availableExtensions)
+			{
+				if (strcmp(extension.extensionName, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) == 0)
+				{
+					appInfo.dynamicRenderingSupported = true;
+					std::cout << "Dynamic rendering supported via Vulkan\n";
+					break;
+				}
+			}
+		}
+
+		if (deviceProperties.apiVersion >= VK_VERSION_1_2)
+		{
+			appInfo.timelineSemaphoresSupported = true;
+			std::cout << "Timeline semaphores supported via Vulkan1.2\n";
+		}
+		else
+		{
+			for (const auto& extension : availableExtensions)
+			{
+				if (strcmp(extension.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) == 0)
+				{
+					appInfo.timelineSemaphoresSupported = true;
+					std::cout << "Timeline semaphores supported via Vulkan\n";
+					break;
+				}
+			}
+		}
+
+		if (deviceProperties.apiVersion >= VK_VERSION_1_3)
+		{
+			appInfo.synchronization2Supported = true;
+			std::cout << "Synchronization2 supported via Vulkan1.3\n";
+		}
+		else
+		{
+			for (const auto& extension : availableExtensions)
+			{
+				if (strcmp(extension.extensionName, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) == 0)
+				{
+					appInfo.synchronization2Supported = true;
+					std::cout << "Synchronization2 supported via Vulkan\n";
+					break;
+				}
+			}
+		}
+
+		if (appInfo.dynamicRenderingSupported && deviceProperties.apiVersion < VK_VERSION_1_3)
+			requiredDeviceExtension.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+
+		if (appInfo.timelineSemaphoresSupported && deviceProperties.apiVersion < VK_VERSION_1_2)
+			requiredDeviceExtension.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+
+		if (appInfo.synchronization2Supported && deviceProperties.apiVersion < VK_VERSION_1_3)
+			requiredDeviceExtension.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+	}
+
 	void generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
 	{
 		// 检查图像格式是否支持线性闪烁
@@ -1281,6 +1479,13 @@ private:
 		cleanupSwapChain();
 		createSwapChain();
 		createImageViews();
+
+		if (!appInfo.dynamicRenderingSupported)
+		{
+			createRenderPass();
+			createFramebuffers();
+		}
+
 		createColorResources();
 		createDepthResources();
 	}
@@ -1294,104 +1499,224 @@ private:
 	{
 		commandBuffers[currentFrame].begin({});
 
-		// transition the image layout for rendering
-		transition_image_layout(
-			imageIndex,
-			vk::ImageLayout::eUndefined,
-			vk::ImageLayout::eColorAttachmentOptimal,
-			{},
-			vk::AccessFlagBits2::eColorAttachmentWrite,
-			vk::PipelineStageFlagBits2::eTopOfPipe,
-			vk::PipelineStageFlagBits2::eColorAttachmentOutput
-		);
-
-		// 将多重采样彩色图像转换为COLOR_ATTACHMENT_OPTIMAL
-		transition_image_layout_custom(
-			colorImage,
-			vk::ImageLayout::eUndefined,
-			vk::ImageLayout::eColorAttachmentOptimal,
-			{},
-			vk::AccessFlagBits2::eColorAttachmentWrite,
-			vk::PipelineStageFlagBits2::eTopOfPipe,
-			vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-			vk::ImageAspectFlagBits::eColor
-		);
-
-		// 将深度图像转换为DEPTH_ATTACHMENT_OPTIMAL
-		transition_image_layout_custom(
-			depthImage,
-			vk::ImageLayout::eUndefined,
-			vk::ImageLayout::eDepthAttachmentOptimal,
-			{},
-			vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
-			vk::PipelineStageFlagBits2::eTopOfPipe,
-			vk::PipelineStageFlagBits2::eEarlyFragmentTests,
-			vk::ImageAspectFlagBits::eDepth
-		);
-
-		// set up the color attachment
-		vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f); 
+		vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
 		vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
+		std::array<vk::ClearValue, 2> clearValues = { clearColor, clearDepth };
 
-		// 颜色附件（多采样）与解析附件
-		vk::RenderingAttachmentInfo colorAttachment = {
-			.imageView = colorImageView,
-			.imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-			.resolveMode = vk::ResolveModeFlagBits::eAverage,
-			.resolveImageView = swapChainImageViews[imageIndex],
-			.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-			.loadOp = vk::AttachmentLoadOp::eClear,
-			.storeOp = vk::AttachmentStoreOp::eStore,
-			.clearValue = clearColor
-		};
+		if (appInfo.dynamicRenderingSupported)
+		{
+			// Transition attachments to the correct layout
+			if (appInfo.synchronization2Supported) 
+			{
+				// Use Synchronization2 API for image transitions
+				vk::ImageMemoryBarrier2 colorBarrier
+				{
+					.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe,
+					.srcAccessMask = vk::AccessFlagBits2::eNone,
+					.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+					.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+					.oldLayout = vk::ImageLayout::eUndefined,
+					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+					.image = *colorImage,
+					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+				};
 
-		// 深度附件
-		vk::RenderingAttachmentInfo depthrAttachment = {
-			.imageView = depthImageView,
-			.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
-			.loadOp = vk::AttachmentLoadOp::eClear,
-			.storeOp = vk::AttachmentStoreOp::eStore,
-			.clearValue = clearDepth
-		};
+				vk::ImageMemoryBarrier2 depthBarrier
+				{
+					.srcStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
+					.srcAccessMask = vk::AccessFlagBits2::eNone,
+					.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
+					.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+					.oldLayout = vk::ImageLayout::eUndefined,
+					.newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+					.image = *depthImage,
+					.subresourceRange = { vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1 }
+				};
 
-		// set up the rendering info
-		vk::RenderingInfo renderingInfo = {
-			.renderArea = {
-				.offset = { 0, 0 },
-				.extent = swapChainExtent
-			},
-			.layerCount = 1,
-			.colorAttachmentCount = 1,
-			.pColorAttachments = &colorAttachment,
-			.pDepthAttachment = &depthrAttachment
-		};
+				vk::ImageMemoryBarrier2 swapchainBarrier
+				{
+					.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe,
+					.srcAccessMask = vk::AccessFlagBits2::eNone,
+					.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+					.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+					.oldLayout = vk::ImageLayout::eUndefined,
+					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+					.image = swapChainImages[imageIndex],
+					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+				};
 
-		// Begin rendering
-		commandBuffers[currentFrame].beginRendering(renderingInfo);
+				std::array<vk::ImageMemoryBarrier2, 3> barriers = { colorBarrier, depthBarrier, swapchainBarrier };
+				vk::DependencyInfo dependencyInfo
+				{
+					.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size()),
+					.pImageMemoryBarriers = barriers.data()
+				};
 
-		// Rendering commands will go here
+				commandBuffers[currentFrame].pipelineBarrier2(dependencyInfo);
+			}
+			else 
+			{
+				// Use traditional synchronization API
+				vk::ImageMemoryBarrier colorBarrier
+				{
+					.srcAccessMask = vk::AccessFlagBits::eNone,
+					.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+					.oldLayout = vk::ImageLayout::eUndefined,
+					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = *colorImage,
+					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+				};
+
+				vk::ImageMemoryBarrier depthBarrier
+				{
+					.srcAccessMask = vk::AccessFlagBits::eNone,
+					.dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+					.oldLayout = vk::ImageLayout::eUndefined,
+					.newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = *depthImage,
+					.subresourceRange = { vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1 }
+				};
+
+				vk::ImageMemoryBarrier swapchainBarrier
+				{
+					.srcAccessMask = vk::AccessFlagBits::eNone,
+					.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+					.oldLayout = vk::ImageLayout::eUndefined,
+					.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = swapChainImages[imageIndex],
+					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+				};
+
+				std::array<vk::ImageMemoryBarrier, 3> barriers = { colorBarrier, depthBarrier, swapchainBarrier };
+				commandBuffers[currentFrame].pipelineBarrier(
+					vk::PipelineStageFlagBits::eTopOfPipe,
+					vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+					vk::DependencyFlagBits::eByRegion,
+					{},
+					{},
+					barriers
+				);
+			}
+
+			// Setup rendering attachments
+			vk::RenderingAttachmentInfo colorAttachment
+			{
+				.imageView = *colorImageView,
+				.imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+				.resolveMode = vk::ResolveModeFlagBits::eAverage,
+				.resolveImageView = *swapChainImageViews[imageIndex],
+				.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+				.loadOp = vk::AttachmentLoadOp::eClear,
+				.storeOp = vk::AttachmentStoreOp::eStore,
+				.clearValue = clearColor
+			};
+
+			vk::RenderingAttachmentInfo depthAttachment
+			{
+				.imageView = *depthImageView,
+				.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+				.loadOp = vk::AttachmentLoadOp::eClear,
+				.storeOp = vk::AttachmentStoreOp::eDontCare,
+				.clearValue = clearDepth
+			};
+
+			vk::RenderingInfo renderingInfo
+			{
+				.renderArea = {{0, 0}, swapChainExtent},
+				.layerCount = 1,
+				.colorAttachmentCount = 1,
+				.pColorAttachments = &colorAttachment,
+				.pDepthAttachment = &depthAttachment
+			};
+
+			commandBuffers[currentFrame].beginRendering(renderingInfo);
+		}
+		else {
+			// Use traditional render pass
+			std::cout << "Recording command buffer with traditional render pass\n";
+
+			vk::RenderPassBeginInfo renderPassInfo
+			{
+				.renderPass = *renderPass,
+				.framebuffer = *swapChainFramebuffers[imageIndex],
+				.renderArea = {{0, 0}, swapChainExtent},
+				.clearValueCount = static_cast<uint32_t>(clearValues.size()),
+				.pClearValues = clearValues.data()
+			};
+
+			commandBuffers[currentFrame].beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+		}
+
+		// Common rendering commands
 		commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
 		commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
 		commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-		commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, {0});
+		commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, { 0 });
 		commandBuffers[currentFrame].bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
 		commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *descriptorSets[currentFrame], nullptr);
-
 		commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
-		// End rendering
-		commandBuffers[currentFrame].endRendering();
+		if (appInfo.dynamicRenderingSupported) 
+		{
+			commandBuffers[currentFrame].endRendering();
 
-		// transition the image layout for presentation
-		transition_image_layout(
-			imageIndex, 
-			vk::ImageLayout::eColorAttachmentOptimal,
-			vk::ImageLayout::ePresentSrcKHR,
-			vk::AccessFlagBits2::eColorAttachmentWrite, // srcAccessMask
-			{}, // dstAccessMask
-			vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
-			vk::PipelineStageFlagBits2::eBottomOfPipe // dstStage
-		);
+			// Transition swapchain image to present layout
+			if (appInfo.synchronization2Supported) 
+			{
+				vk::ImageMemoryBarrier2 barrier
+				{
+					.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+					.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+					.dstStageMask = vk::PipelineStageFlagBits2::eBottomOfPipe,
+					.dstAccessMask = vk::AccessFlagBits2::eNone,
+					.oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+					.newLayout = vk::ImageLayout::ePresentSrcKHR,
+					.image = swapChainImages[imageIndex],
+					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+				};
+
+				vk::DependencyInfo dependencyInfo
+				{
+					.imageMemoryBarrierCount = 1,
+					.pImageMemoryBarriers = &barrier
+				};
+
+				commandBuffers[currentFrame].pipelineBarrier2(dependencyInfo);
+			}
+			else 
+			{
+				vk::ImageMemoryBarrier barrier
+				{
+					.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+					.dstAccessMask = vk::AccessFlagBits::eNone,
+					.oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+					.newLayout = vk::ImageLayout::ePresentSrcKHR,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = swapChainImages[imageIndex],
+					.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+				};
+
+				commandBuffers[currentFrame].pipelineBarrier
+				(
+					vk::PipelineStageFlagBits::eColorAttachmentOutput,
+					vk::PipelineStageFlagBits::eBottomOfPipe,
+					vk::DependencyFlagBits::eByRegion,
+					{},
+					{},
+					{ barrier }
+				);
+			}
+		}
+		else 
+			commandBuffers[currentFrame].endRenderPass();
+		
 
 		commandBuffers[currentFrame].end();
 	}
@@ -1557,6 +1882,8 @@ private:
 * private variables (private functions calls only)
 */
 private:
+	AppInfo appInfo;
+
 	GLFWwindow* window = nullptr;
 
 	vk::raii::Context context;
@@ -1576,6 +1903,9 @@ private:
 	vk::Format swapChainImageFormat = vk::Format::eUndefined;
 	vk::Extent2D swapChainExtent;
 	std::vector<vk::raii::ImageView> swapChainImageViews;
+
+	vk::raii::RenderPass renderPass = nullptr;
+	std::vector<vk::raii::Framebuffer> swapChainFramebuffers;
 
 	vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
@@ -1631,7 +1961,7 @@ private:
 
 };
 
-int main2()
+int main()
 {
 	try
 	{

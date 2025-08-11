@@ -1092,7 +1092,7 @@ private:
         };
 };
 
-int main()
+int main1()
 {
     try {
         ComputeShader computeShader;
