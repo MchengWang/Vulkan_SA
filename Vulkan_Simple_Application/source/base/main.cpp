@@ -23,9 +23,46 @@ import vulkan_hpp;
 #endif // __INTELLISENSE__
 
 #include <vulkan/vk_platform.h>
+
+#if defined(__ANDROID__)
+#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan_android.h>
+#endif // defined(__ANDROID__)
+
 #include <vulkan/vulkan_profiles.hpp>
 
+#if defined(__ANDROID__)
+#define PLATFORM_ANDROID 1
+#else
+#define PLATFORM_DESKTOP 1
+#endif // defined(__ANDROID__)
+
+#if PLATFORM_ANDROID
+#include <android/log.h>
+#include <game-activity/native_app_glue/android_native_app_glue.h>
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
+
+extern "C" void app_dummy()
+{
+
+}
+
+typedef AAssetManager AssetManagerType;
+
+#define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "Vulkan", __VA_ARGS__))
+#define LOGW(...) ((void)__android_log_print(ANDROID_LOG_WARN, "Vulkan", __VA_ARGS__))
+#define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, "Vulkan", __VA_ARGS__))
+
+#else
+typedef void AssetMangerType;
+
 #include <GLFW/glfw3.h>
+
+#define LOGI(...) printf(__VA_ARGS__); printf("\n")
+#define LOGW(...) printf(__VA_ARGS__); printf("\n")
+#define LOGE(...) fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n")
+#endif // PLATFORM_ANDROID
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -54,12 +91,42 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif // NDEBUG
 
+#if PLATFORM_ANDROID
+#ifndef VP_PROFILE_PROPERTIES_DEFINED
+#define VP_PROFILE_PROPERTIES_DEFINED
+
+struct VpProfileProperties
+{
+	char name[256];
+	uint32_t specVersion;
+};
+#endif // !VP_PROFILE_PROPERTIES_DEFINED
+#endif // PLATFORM_ANDROID
+
+#ifndef VP_KHR_ROADMAP_2022_NAME
+#define VP_KHR_ROADMAP_2022_NAME "VP_KHR_roadmap_2022"
+#endif // !VP_KHR_ROADMAP_2022_NAME
+
+#ifndef VP_KHR_ROADMAP_2022_SPEC_VERSION
+#define VP_KHR_ROADMAP_2022_SPEC_VERSION 1
+#endif // !VP_KHR_ROADMAP_2022_SPEC_VERSION
 
 struct AppInfo
 {
 	bool profileSupported = false;
 	VpProfileProperties profile;
 };
+
+#if PLATFORM_ANDROID
+void android_main(android_app* app);
+
+struct AndroidAppState
+{
+	ANativeWindow* nativeWindow = nullptr;
+	bool initialized = false;
+	android_app* app = nullptr;
+};
+#endif // PLATFORM_ANDROID
 
 struct Vertex
 {
@@ -127,6 +194,28 @@ class Triangle
 * accessible to all
 */
 public:
+#if PLATFORM_ANDROID
+	void run(android_app* app)
+	{
+		androidAppState.nativeWindow = app->window;
+		androidAppState.app = app;
+		app->userData = &androidAppState;
+		app->onAppCmd = handleAppCommand;
+
+		int events;
+		android_poll_source* source;
+
+		while (app->destroyRequested == 0)
+		{
+			while (ALooper_pollOnce(androidAppState.initialized ? 0 : -1, nullptr, &events, (void**)&source) >= 0)
+				if (source != nullptr) source->process(app, source);
+
+			if (androidAppState.initialized && androidAppState.nativeWindow != nullptr) drawFrame();
+		}
+
+		if (androidAppState.initialized) device.waitIdle();
+	}
+#else
 	void run()
 	{
 		initWindow();
@@ -134,11 +223,14 @@ public:
 		mainLoop();
 		cleanup();
 	}
+#endif // PLATFORM_ANDROID
+
 
 /**
 * private functions (no exposed)
 */
 private:
+#if PLATFORM_DESKTOP
 	void initWindow()
 	{
 		glfwInit();
@@ -154,6 +246,8 @@ private:
 				app->framebufferResized = true;
 			});
 	}
+#endif // PLATFORM_DESKTOP
+
 
 	void initVulkan()
 	{
@@ -241,11 +335,26 @@ private:
 
 	void createSurface()
 	{
+#if PLATFORM_DESKTOP
 		VkSurfaceKHR _surface;
 		if (glfwCreateWindowSurface(*instance, window, nullptr, &_surface) != 0)
 			throw std::runtime_error("failed to create window surface!");
 
 		surface = vk::raii::SurfaceKHR(instance, _surface);
+#else
+		VkSurfaceKHR _surface;
+		VkAndroidSurfaceCreateInfoKHR createInfo
+		{
+			.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+			.window = androidAppState.nativeWindow
+		};
+
+		if (vkCreateAndroidSurfaceKHR(*instance, &createInfo, nullptr, &_surface) != VK_SUCCESS)
+			throw std::runtime_error("failed to create Android surface!");
+
+		surface = vk::raii::SurfaceKHR(instance, _surface);
+#endif // PLATFORM_DESKTOP
+
 	}
 
 	void pickPhysicalDevice()
@@ -281,9 +390,63 @@ private:
 				return supprotsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
 			});
 
-		if (devIter != devices.end())
+		if (devIter != devices.end()) 
+		{
 			physicalDevice = *devIter;
-		else
+
+			// Check for Vulkan profile support
+			VpProfileProperties profileProperties;
+#if PLATFORM_ANDROID
+			strcpy(profileProperties.name, VP_KHR_ROADMAP_2022_NAME);
+#else
+			strcpy(profileProperties.profileName, VP_KHR_ROADMAP_2022_NAME);
+#endif
+			profileProperties.specVersion = VP_KHR_ROADMAP_2022_SPEC_VERSION;
+
+			VkBool32 supported = VK_FALSE;
+			bool result = false;
+
+#if PLATFORM_ANDROID
+			// Create a vp::ProfileDesc from our VpProfileProperties
+			vp::ProfileDesc profileDesc = {
+				profileProperties.name,
+				profileProperties.specVersion
+			};
+
+			// Use vp::GetProfileSupport for Android
+			result = vp::GetProfileSupport(
+				*physicalDevice,  // Pass the physical device directly
+				&profileDesc,     // Pass the profile description
+				&supported        // Output parameter for support status
+			);
+#else
+			// Use vpGetPhysicalDeviceProfileSupport for Desktop
+			VkResult vk_result = vpGetPhysicalDeviceProfileSupport(
+				*instance,
+				*physicalDevice,
+				&profileProperties,
+				&supported
+			);
+
+			result = vk_result == static_cast<int>(vk::Result::eSuccess);
+#endif
+			const char* name = nullptr;
+#ifdef PLATFORM_ANDROID
+			name = profileProperties.name;
+#else
+			name = profileProperties.profileName;
+#endif
+
+			if (result && supported == VK_TRUE)
+			{
+				appInfo.profileSupported = true;
+				appInfo.profile = profileProperties;
+				LOGI("Device supports Vulkan profile: %s", name);
+			}
+			else 
+				LOGI("Device does not support Vulkan profile: %s", name);
+		}
+		else 
 			throw std::runtime_error("failed to find a suitable GPU!");
 	}
 
@@ -977,6 +1140,7 @@ private:
 		}
 	}
 
+#if PLATFORM_DESKTOP
 	void mainLoop()
 	{
 		while (!glfwWindowShouldClose(window))
@@ -987,6 +1151,8 @@ private:
 
 		device.waitIdle();
 	}
+#endif // PLATFORM_DESKTOP
+
 
 	void drawFrame() {
 		while (vk::Result::eTimeout == device.waitForFences(*inFlightFences[currentFrame], vk::True, UINT64_MAX));
@@ -1058,12 +1224,15 @@ private:
 		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 	}
 
-	void cleanup()
+#if PLATFORM_DESKTOP
+	void cleanup() const
 	{
 		glfwDestroyWindow(window);
 
 		glfwTerminate();
 	}
+#endif // PLATFROM_DESKTOP
+
 
 /**
 * helper functions
@@ -1410,6 +1579,7 @@ private:
 	
 	void recreateSwapChain()
 	{
+#if PLATFORM_DESKTOP
 		int width = 0, height = 0;
 		glfwGetFramebufferSize(window, &width, &height);
 		while (width == 0 || height == 0)
@@ -1417,6 +1587,8 @@ private:
 			glfwGetFramebufferSize(window, &width, &height);
 			glfwWaitEvents();
 		}
+
+#endif // PLATFORM_DESKTOP
 
 		device.waitIdle();
 
@@ -1748,9 +1920,50 @@ private:
 * private variables (private functions calls only)
 */
 private:
-	AppInfo appInfo = {};
+#if PLATFORM_ANDROID
+	AndroidAppState androidAppState;
 
+	static void handleAppCommand(android_app* app, int32_t cmd)
+	{
+		auto* appState = static_cast<AndroidAppState*>(app->userData);
+
+		switch (cmd)
+		{
+		case APP_CMD_INIT_WINDOW:
+			if (app->window != nullptr)
+			{
+				appState->nativeWindow = app->window;
+				appState->initialized = true;
+			}
+			break;
+		case APP_CMD_TERM_WINDOW:
+			appState->nativeWindow = nullptr;
+			break;
+		default:
+			break;
+		}
+	}
+
+	static int32_t handleInputEvent(android_app* app, AInputEvent* event)
+	{
+		if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION)
+		{
+			float x = AMotionEvent_getX(event, 0);
+			float y = AMotionEvent_getY(event, 0);
+
+			LOGI("Touch at: %f, %f", x, y);
+
+			return 1;
+		}
+
+		return 0;
+	}
+#else
 	GLFWwindow* window = nullptr;
+#endif // PLATFORM_ANDROID
+
+
+	AppInfo appInfo = {};
 
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
