@@ -37,6 +37,10 @@ import vulkan_hpp;
 #define PLATFORM_DESKTOP 1
 #endif // defined(__ANDROID__)
 
+#include <tiny_gltf.h>
+
+#include <ktx.h>
+
 #if PLATFORM_ANDROID
 #include <android/log.h>
 #include <game-activity/native_app_glue/android_native_app_glue.h>
@@ -71,9 +75,7 @@ typedef void AssetMangerType;
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/hash.hpp>
 
-#include <stb_image.h>
-
-#include <tiny_obj_loader.h>
+#include <ktx.h>
 
 constexpr uint32_t WIDTH = 1290;
 constexpr uint32_t HEIGHT = 720;
@@ -271,7 +273,6 @@ private:
 			createFramebuffers();
 
 		createCommandPool();
-		createColorResources();
 		createDepthResources();
 		createTextureImage();
 		createTextureImageView();
@@ -870,53 +871,63 @@ private:
 		commandPool = vk::raii::CommandPool(device, poolInfo);
 	}
 
-	void createColorResources()
-	{
-		vk::Format colorFormat = swapChainImageFormat;
-
-		createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, colorFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, colorImage, colorImageMemory);
-
-		colorImageView = createImageView(colorImage, colorFormat, vk::ImageAspectFlagBits::eColor, 1);
-	}
-
 	void createDepthResources()
 	{
 		vk::Format depthFormat = findDepthFormat();
 
-		createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, depthImage, depthImageMemory);
+		createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, depthImage, depthImageMemory);
 		
 		depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
 	}
 
 	void createTextureImage()
 	{
-		int texWidth, texHeight, texChannels;
-		stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-		vk::DeviceSize imageSize = texWidth * texHeight * 4;
+		ktxTexture* kTexture;
+		KTX_error_code result = ktxTexture_CreateFromNamedFile(
+			TEXTURE_PATH.c_str(),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+			&kTexture
+		);
 
-		mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+		if (result != KTX_SUCCESS)
+			throw std::runtime_error("failed to load ktx texture image!");
 
-		if (!pixels)
-			throw std::runtime_error("failed to load texture image!");
+		uint32_t texWidth = kTexture->baseWidth;
+		uint32_t texHeight = kTexture->baseHeight;
+		ktx_size_t imageSize = ktxTexture_GetImageSize(kTexture, 0);
+		ktx_uint8_t* ktxTextureData = ktxTexture_GetData(kTexture);
 
 		vk::raii::Buffer stagingBuffer({});
 		vk::raii::DeviceMemory stagingBufferMemory({});
-
 		createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer, stagingBufferMemory);
 
 		void* data = stagingBufferMemory.mapMemory(0, imageSize);
-		memcpy(data, pixels, imageSize);
+		memcpy(data, ktxTextureData, imageSize);
 		stagingBufferMemory.unmapMemory();
 
-		stbi_image_free(pixels);
+		vk::Format textureFormat;
 
-		createImage(texWidth, texHeight, mipLevels, vk::SampleCountFlagBits::e1, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal, textureImage, textureImageMemory);
+		if (kTexture->classId == ktxTexture2_c)
+		{
+			auto* ktx2 = reinterpret_cast<ktxTexture2*>(kTexture);
+			textureFormat = static_cast<vk::Format>(ktx2->vkFormat);
+			if (textureFormat == vk::Format::eUndefined)
+				textureFormat == vk::Format::eR8G8B8A8Unorm;
+		}
+		else
+			textureFormat == vk::Format::eR8G8B8A8Unorm;
 
-		transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
-		copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-		//transitionImageLayout(textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+		textureImageFormat = textureFormat;
 
-		generateMipmaps(textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
+		createImage(texWidth, texHeight, textureFormat, vk::ImageTiling::eOptimal,
+			vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+			vk::MemoryPropertyFlagBits::eDeviceLocal, textureImage, textureImageMemory);
+
+		transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+		copyBufferToImage(stagingBuffer, textureImage, texWidth, texHeight);
+		transitionImageLayout(textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+		ktxTexture_Destroy(kTexture);
 	}
 
 	void createTextureImageView()
@@ -947,45 +958,103 @@ private:
 
 	void loadModel()
 	{
-		tinyobj::attrib_t attrib;
-		std::vector<tinyobj::shape_t> shapes;
-		std::vector<tinyobj::material_t> materials;
-		std::string warn, err;
+		tinygltf::Model model;
+		tinygltf::TinyGLTF loader;
+		std::string err, warn;
 
-		if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str()))
-			throw std::runtime_error(warn + err);
+		bool ret = loader.LoadBinaryFromFile(&model, &err, &warn, MODEL_PATH);
 
-		std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+		if (!warn.empty())
+			std::cout << "glTF warning: " << warn << std::endl;
 
-		for (const auto& shape : shapes)
+		if (!err.empty())
+			std::cout << "glTF error: " << err << std::endl;
+
+		if (!ret)
+			throw std::runtime_error("failed to load glTF model");
+
+		vertices.clear();
+		indices.clear();
+
+		for (const auto& mesh : model.meshes) 
 		{
-			for (const auto& index : shape.mesh.indices)
+			for (const auto& primitive : mesh.primitives) 
 			{
-				Vertex vertex{};
+				const tinygltf::Accessor& indexAccessor = model.accessors[primitive.indices];
+				const tinygltf::BufferView& indexBufferView = model.bufferViews[indexAccessor.bufferView];
+				const tinygltf::Buffer& indexBuffer = model.buffers[indexBufferView.buffer];
 
-				vertex.pos = {
-					attrib.vertices[3 * index.vertex_index + 0],
-					attrib.vertices[3 * index.vertex_index + 1],
-					attrib.vertices[3 * index.vertex_index + 2],
-				};
+				const tinygltf::Accessor& posAccessor = model.accessors[primitive.attributes.at("POSITION")];
+				const tinygltf::BufferView& posBufferView = model.bufferViews[posAccessor.bufferView];
+				const tinygltf::Buffer& posBuffer = model.buffers[posBufferView.buffer];
 
-				vertex.texCoord = {
-					attrib.texcoords[2 * index.texcoord_index + 0],
-					1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
-				};
+				bool hasTexCoords = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
+				const tinygltf::Accessor* texCoordAccessor = nullptr;
+				const tinygltf::BufferView* texCoordBufferView = nullptr;
+				const tinygltf::Buffer* texCoordBuffer = nullptr;
 
-				vertex.color = { 1.0f, 1.0f, 1.0f };
-
-				if (!uniqueVertices.contains(vertex))
+				if (hasTexCoords) 
 				{
-					uniqueVertices[vertex] = static_cast<uint32_t>(vertices.size());
+					texCoordAccessor = &model.accessors[primitive.attributes.at("TEXCOORD_0")];
+					texCoordBufferView = &model.bufferViews[texCoordAccessor->bufferView];
+					texCoordBuffer = &model.buffers[texCoordBufferView->buffer];
+				}
+
+				uint32_t baseVertex = static_cast<uint32_t>(vertices.size());
+
+				for (size_t i = 0; i < posAccessor.count; i++) 
+				{
+					Vertex vertex{};
+
+					const float* pos = reinterpret_cast<const float*>(&posBuffer.data[posBufferView.byteOffset + posAccessor.byteOffset + i * 12]);
+
+					vertex.pos = { pos[0], -pos[1], pos[2] };
+
+					if (hasTexCoords)
+					{
+						const float* texCoord = reinterpret_cast<const float*>(&texCoordBuffer->data[texCoordBufferView->byteOffset + texCoordAccessor->byteOffset + i * 8]);
+						vertex.texCoord = { texCoord[0], texCoord[1] };
+					}
+					else 
+						vertex.texCoord = { 0.0f, 0.0f };
+
+					vertex.color = { 1.0f, 1.0f, 1.0f };
+
 					vertices.push_back(vertex);
 				}
 
-				indices.push_back(uniqueVertices[vertex]);
+				const unsigned char* indexData = &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset];
+				size_t indexCount = indexAccessor.count;
+				size_t indexStride = 0;
+
+				// Determine index stride based on component type
+				if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) 
+					indexStride = sizeof(uint16_t);
+				else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) 
+					indexStride = sizeof(uint32_t);
+				else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) 
+					indexStride = sizeof(uint8_t);
+				else 
+					throw std::runtime_error("Unsupported index component type");
+
+				indices.reserve(indices.size() + indexCount);
+
+				for (size_t i = 0; i < indexCount; i++) 
+				{
+					uint32_t index = 0;
+
+					if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) 
+						index = *reinterpret_cast<const uint16_t*>(indexData + i * indexStride);
+					else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) 
+						index = *reinterpret_cast<const uint32_t*>(indexData + i * indexStride);
+					else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) 
+						index = *reinterpret_cast<const uint8_t*>(indexData + i * indexStride);
+
+					indices.push_back(baseVertex + index);
+				}
 			}
 		}
-	}
+	} 
 
 	void createVertexBuffer()
 	{
@@ -1342,7 +1411,7 @@ private:
 		endSingleTimeCommands(*commandBuffer);
 	}
 
-	void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits numSamples, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, vk::raii::Image& image, vk::raii::DeviceMemory& imageMemory)
+	void createImage(uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, vk::raii::Image& image, vk::raii::DeviceMemory& imageMemory)
 	{
 		vk::ImageCreateInfo imageInfo
 		{
@@ -1351,10 +1420,11 @@ private:
 			.extent = { width, height, 1 },
 			.mipLevels = mipLevels,
 			.arrayLayers = 1,
-			.samples = numSamples,
+			.samples = vk::SampleCountFlagBits::e1,
 			.tiling = tiling,
 			.usage = usage,
-			.sharingMode = vk::SharingMode::eExclusive
+			.sharingMode = vk::SharingMode::eExclusive,
+			.initialLayout = vk::ImageLayout::eUndefined
 		};
 
 		image = vk::raii::Image(device, imageInfo);
@@ -1367,7 +1437,7 @@ private:
 		};
 
 		imageMemory = vk::raii::DeviceMemory(device, allocInfo);
-		image.bindMemory(imageMemory, 0);
+		image.bindMemory(*imageMemory, 0);
 	}
 
 	vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
@@ -1410,7 +1480,7 @@ private:
 		return vk::SampleCountFlagBits::e1;
 	}
 
-	void transitionImageLayout(const vk::raii::Image& image, const vk::ImageLayout oldLayout, const vk::ImageLayout newLayout, uint32_t mipLevels)
+	void transitionImageLayout(const vk::raii::Image& image, const vk::ImageLayout oldLayout, const vk::ImageLayout newLayout)
 	{
 		auto commandBuffer = beginSingleTimeCommands();
 
@@ -1421,7 +1491,7 @@ private:
 			.image = image,
 			.subresourceRange = {
 				vk::ImageAspectFlagBits::eColor,
-				0, mipLevels, 0, 1
+				0, 1, 0, 1
 			}
 		};
 
@@ -1602,7 +1672,6 @@ private:
 			createFramebuffers();
 		}
 
-		createColorResources();
 		createDepthResources();
 	}
 
@@ -1615,147 +1684,52 @@ private:
 	{
 		commandBuffers[currentFrame].begin({});
 
-		// Transition the swapchain image to the correct layout for rendering
-		vk::ImageMemoryBarrier imageBarrier{
-			.srcAccessMask = vk::AccessFlagBits::eNone,
-			.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-			.oldLayout = vk::ImageLayout::eUndefined,
-			.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = swapChainImages[imageIndex],
-			.subresourceRange = {
-				.aspectMask = vk::ImageAspectFlagBits::eColor,
-				.baseMipLevel = 0,
-				.levelCount = 1,
-				.baseArrayLayer = 0,
-				.layerCount = 1
-			}
-		};
-
-		commandBuffers[currentFrame].pipelineBarrier(
-			vk::PipelineStageFlagBits::eTopOfPipe,
-			vk::PipelineStageFlagBits::eColorAttachmentOutput,
-			vk::DependencyFlagBits::eByRegion,
-			std::array<vk::MemoryBarrier, 0>{},
-			std::array<vk::BufferMemoryBarrier, 0>{},
-			std::array<vk::ImageMemoryBarrier, 1>{imageBarrier}
+		transition_image_layout(
+			imageIndex,
+			vk::ImageLayout::eUndefined,
+			vk::ImageLayout::eColorAttachmentOptimal,
+			{},
+			vk::AccessFlagBits2::eColorAttachmentWrite,
+			vk::PipelineStageFlagBits2::eTopOfPipe,
+			vk::PipelineStageFlagBits2::eColorAttachmentOutput
 		);
 
-		// Clear values for color and depth
-		vk::ClearValue clearColor{};
-		clearColor.color = vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+		vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+		
+		vk::RenderingAttachmentInfo attachmentInfo = {
+			.imageView = *swapChainImageViews[imageIndex],
+			.imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+			.loadOp = vk::AttachmentLoadOp::eClear,
+			.storeOp = vk::AttachmentStoreOp::eStore,
+			.clearValue = clearColor
+		};
+		
+		vk::RenderingInfo renderingInfo = {
+			.renderArea = {.offset = { 0, 0 }, .extent = swapChainExtent },
+			.layerCount = 1,
+			.colorAttachmentCount = 1,
+			.pColorAttachments = &attachmentInfo
+		};
 
-		vk::ClearValue clearDepth{};
-		clearDepth.depthStencil = vk::ClearDepthStencilValue{ 1.0f, 0 };
-
-		std::array<vk::ClearValue, 2> clearValues = { clearColor, clearDepth };
-
-		// Use different rendering approach based on profile support
-		if (appInfo.profileSupported) {
-			// Use dynamic rendering with the KHR roadmap 2022 profile
-			vk::RenderingAttachmentInfo colorAttachment{
-				.imageView = *colorImageView,
-				.imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-				.resolveMode = vk::ResolveModeFlagBits::eAverage,
-				.resolveImageView = *swapChainImageViews[imageIndex],
-				.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-				.loadOp = vk::AttachmentLoadOp::eClear,
-				.storeOp = vk::AttachmentStoreOp::eStore,
-				.clearValue = clearColor
-			};
-
-			vk::RenderingAttachmentInfo depthAttachment{
-				.imageView = *depthImageView,
-				.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-				.loadOp = vk::AttachmentLoadOp::eClear,
-				.storeOp = vk::AttachmentStoreOp::eDontCare,
-				.clearValue = clearDepth
-			};
-
-			vk::RenderingInfo renderingInfo{
-				.renderArea = {{0, 0}, swapChainExtent},
-				.layerCount = 1,
-				.colorAttachmentCount = 1,
-				.pColorAttachments = &colorAttachment,
-				.pDepthAttachment = &depthAttachment
-			};
-
-			commandBuffers[currentFrame].beginRendering(renderingInfo);
-
-		}
-		else {
-			// Use traditional render pass if not using the KHR roadmap 2022 profile
-			vk::RenderPassBeginInfo renderPassInfo{
-				.renderPass = *renderPass,
-				.framebuffer = *swapChainFramebuffers[imageIndex],
-				.renderArea = {{0, 0}, swapChainExtent},
-				.clearValueCount = static_cast<uint32_t>(clearValues.size()),
-				.pClearValues = clearValues.data()
-			};
-
-			commandBuffers[currentFrame].beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-
-		}
-
+		commandBuffers[currentFrame].beginRendering(renderingInfo);
 		commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
-
-		vk::Viewport viewport{
-			.x = 0.0f,
-			.y = 0.0f,
-			.width = static_cast<float>(swapChainExtent.width),
-			.height = static_cast<float>(swapChainExtent.height),
-			.minDepth = 0.0f,
-			.maxDepth = 1.0f
-		};
-		commandBuffers[currentFrame].setViewport(0, viewport);
-
-		vk::Rect2D scissor{
-			.offset = {0, 0},
-			.extent = swapChainExtent
-		};
-		commandBuffers[currentFrame].setScissor(0, scissor);
-
+		commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
+		commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
 		commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, { 0 });
 		commandBuffers[currentFrame].bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
 		commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0, *descriptorSets[currentFrame], nullptr);
-		commandBuffers[currentFrame].drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+		commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
+		commandBuffers[currentFrame].endRendering();
 
-		if (appInfo.profileSupported) {
-			commandBuffers[currentFrame].endRendering();
-
-			// Transition the swapchain image to the correct layout for presentation
-			vk::ImageMemoryBarrier barrier{
-				.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-				.dstAccessMask = vk::AccessFlagBits::eNone,
-				.oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
-				.newLayout = vk::ImageLayout::ePresentSrcKHR,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = swapChainImages[imageIndex],
-				.subresourceRange = {
-					.aspectMask = vk::ImageAspectFlagBits::eColor,
-					.baseMipLevel = 0,
-					.levelCount = 1,
-					.baseArrayLayer = 0,
-					.layerCount = 1
-				}
-			};
-
-			commandBuffers[currentFrame].pipelineBarrier(
-				vk::PipelineStageFlagBits::eColorAttachmentOutput,
-				vk::PipelineStageFlagBits::eBottomOfPipe,
-				vk::DependencyFlagBits::eByRegion,
-				std::array<vk::MemoryBarrier, 0>{},
-				std::array<vk::BufferMemoryBarrier, 0>{},
-				std::array<vk::ImageMemoryBarrier, 1>{barrier}
-			);
-		}
-		else {
-			commandBuffers[currentFrame].endRenderPass();
-			// Traditional render pass already transitions the image to the correct layout
-		}
-
+		transition_image_layout(
+			imageIndex,
+			vk::ImageLayout::eColorAttachmentOptimal,
+			vk::ImageLayout::ePresentSrcKHR,
+			vk::AccessFlagBits2::eColorAttachmentWrite,
+			{},
+			vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+			vk::PipelineStageFlagBits2::eBottomOfPipe
+		);
 		commandBuffers[currentFrame].end();
 	}
 
@@ -2003,6 +1977,7 @@ private:
 	vk::raii::ImageView textureImageView = nullptr;
 	vk::raii::DeviceMemory textureImageMemory = nullptr;
 	vk::raii::Sampler textureSampler = nullptr;
+	vk::Format textureImageFormat = vk::Format::eUndefined;
 
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;

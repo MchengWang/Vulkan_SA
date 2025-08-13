@@ -9,6 +9,8 @@ workspace "Vulkan_SA"
 
 Vulkan_SDK = os.getenv("VULKAN_SDK")
 
+KTX_Software = os.getenv("KTX-Software")
+
 outdir = "%{cfg.buildcfg}"
 
 third_party_path = "%{prj.name}/third_party"
@@ -16,7 +18,7 @@ third_party_path = "%{prj.name}/third_party"
 IncludeDir = {}
 IncludeDir["GLFW"] = third_party_path .. "/glfw"
 IncludeDir["STB_IMAGE"] = third_party_path .. "/stb_image"
-IncludeDir["TINY_OBJ_LOADER"] = third_party_path .. "/tinyobjloader"
+IncludeDir["TINY"] = third_party_path .. "/tiny"
 
 project "Vulkan_Simple_Application"
 	kind "ConsoleApp"
@@ -34,7 +36,8 @@ project "Vulkan_Simple_Application"
 		third_party_path .. "/glm/**.hpp",
 		third_party_path .. "/glm/**.inl",
 		"%{IncludeDir.STB_IMAGE}/*.h",
-		"%{IncludeDir.TINY_OBJ_LOADER}/*.h",
+		"%{IncludeDir.TINY}/*.h",
+		"%{IncludeDir.TINY}/*.hpp",
 
 		"%{Vulkan_SDK}/Include/vulkan/vulkan.cppm",
 	}
@@ -45,8 +48,9 @@ project "Vulkan_Simple_Application"
 		"%{prj.name}/third_party",
 
 		"%{IncludeDir.GLFW}/include",
+		"%{KTX_Software}/include",
 		"%{IncludeDir.STB_IMAGE}",
-		"%{IncludeDir.TINY_OBJ_LOADER}",
+		"%{IncludeDir.TINY}",
 		"%{Vulkan_SDK}/Include",
 	}
 
@@ -54,12 +58,14 @@ project "Vulkan_Simple_Application"
 	{
 		"glfw3.lib",
 		"vulkan-1.lib",
+		"ktx.lib",
 	}
 
 	libdirs
 	{
 		"%{IncludeDir.GLFW}/lib-vc2022",
 		"%{Vulkan_SDK}/Lib",
+		"%{KTX_Software}/lib",
 	}
 
 	defines
@@ -68,6 +74,8 @@ project "Vulkan_Simple_Application"
 		"VULKAN_HPP_NO_STRUCT_CONSTRUCTORS",
 		"STB_IMAGE_IMPLEMENTATION",
 		"TINYOBJLOADER_IMPLEMENTATION",
+		"TINYGLTF_IMPLEMENTATION",
+		"STB_IMAGE_WRITE_IMPLEMENTATION",
 	}
 
 	filter "configurations:DebugX64"
