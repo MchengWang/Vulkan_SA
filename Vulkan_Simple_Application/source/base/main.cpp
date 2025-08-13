@@ -82,6 +82,7 @@ constexpr uint32_t HEIGHT = 720;
 
 constexpr uint64_t FenceTimeout = 100000000;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+constexpr int MAX_OBJECTS = 3;
 
 const std::string TITLE = "TRIANGLE";
 const std::string MODEL_PATH = "resources/models/viking_room.obj";
@@ -166,6 +167,30 @@ template<> struct std::hash<Vertex>
 	}
 };
 
+struct GameObject
+{
+	glm::vec3 position = { 0.0f, 0.0f, 0.0f };
+	glm::vec3 rotation = { 0.0f, 0.0f, 0.0f };
+	glm::vec3 scale = { 1.0f, 1.0f, 1.0f };
+
+	std::vector<vk::raii::Buffer> uniformBuffers;
+	std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+	std::vector<void*> uniformBuffersMapped;
+
+	std::vector<vk::raii::DescriptorSet> descriptorSets;
+
+	glm::mat4 getModelMatrix() const
+	{
+		glm::mat4 model = glm::mat4(1.0f);
+		model = glm::translate(model, position);
+		model = glm::rotate(model, rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+		model = glm::rotate(model, rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+		model = glm::rotate(model, rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+		model = glm::scale(model, scale);
+		return model;
+	}
+};
+
 struct UniformBufferObject
 {
 	alignas(16) glm::mat4 model;
@@ -197,6 +222,23 @@ class Triangle
 */
 public:
 #if PLATFORM_ANDROID
+	void cleanupAndroid()
+	{
+		for (auto& gameObject : gameObjects)
+		{
+			for (size_t i = 0; i < gameObject.uniformBuffersMemory.size(); i++)
+			{
+				if (gameObject.uniformBuffersMapped[i] != nullptr)
+					gameObject.uniformBuffersMemory[i].unmapMemory();
+			}
+
+			gameObject.uniformBuffers.clear();
+			gameObject.uniformBuffersMemory.clear();
+			gameObject.uniformBuffersMapped.clear();
+			gameObject.descriptorSets.clear();
+		}
+	}
+
 	void run(android_app* app)
 	{
 		androidAppState.nativeWindow = app->window;
@@ -280,6 +322,7 @@ private:
 		loadModel();
 		createVertexBuffer();
 		createIndexBuffer();
+		setupGameObjects();
 		createUniformBuffers();
 		createDescriptorPool();
 		createDescriptorSets();
@@ -1089,34 +1132,52 @@ private:
 		copyBuffer(stagingBuffer, indexBuffer, bufferSize);
 	}
 
+	void setupGameObjects()
+	{
+		gameObjects[0].position = { 0.0f, 0.0f, 0.0f };
+		gameObjects[0].rotation = { 0.0f, 0.0f, 0.0f };
+		gameObjects[0].scale = { 1.0f, 1.0f, 1.0f };
+
+		gameObjects[1].position = { -2.0f, 0.0, -1.0f };
+		gameObjects[1].rotation = { 0.0f, glm::radians(45.0f), 0.0f };
+		gameObjects[1].scale = { 0.75f, 0.75f, 0.75f };
+
+		gameObjects[2].position = { 2.0f, 0.0f, -1.0f };
+		gameObjects[2].rotation = { 0.0f, glm::radians(-45.0f), 0.0f };
+		gameObjects[2].scale = { 0.75f, 0.75f, 0.75f };
+	}
+
 	void createUniformBuffers()
 	{
-		uniformBuffers.clear();
-		uniformBuffersMemory.clear();
-		uniformBuffersMapped.clear();
-
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		for (auto& gameObject : gameObjects)
 		{
-			vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
-			vk::raii::Buffer buffer({});
-			vk::raii::DeviceMemory bufferMem({});
-			createBuffer(bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer, bufferMem);
-			uniformBuffers.emplace_back(std::move(buffer));
-			uniformBuffersMemory.emplace_back(std::move(bufferMem));
-			uniformBuffersMapped.emplace_back(uniformBuffersMemory[i].mapMemory(0, bufferSize));
+			gameObject.uniformBuffers.clear();
+			gameObject.uniformBuffersMemory.clear();
+			gameObject.uniformBuffersMapped.clear();
+
+			for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+			{
+				vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
+				vk::raii::Buffer buffer({});
+				vk::raii::DeviceMemory bufferMem({});
+				createBuffer(bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer, bufferMem);
+				gameObject.uniformBuffers.emplace_back(std::move(buffer));
+				gameObject.uniformBuffersMemory.emplace_back(std::move(bufferMem));
+				gameObject.uniformBuffersMapped.emplace_back(gameObject.uniformBuffersMemory[i].mapMemory(0, bufferSize));
+			}
 		}
 	}
 
 	void createDescriptorPool()
 	{
 		std::array poolSizes = {
-			vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
-			vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT),
+			vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_OBJECTS * MAX_FRAMES_IN_FLIGHT),
+			vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_OBJECTS * MAX_FRAMES_IN_FLIGHT),
 		};
 		vk::DescriptorPoolCreateInfo poolInfo
 		{
 			.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-			.maxSets = MAX_FRAMES_IN_FLIGHT,
+			.maxSets = MAX_OBJECTS * MAX_FRAMES_IN_FLIGHT,
 			.poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
 			.pPoolSizes = poolSizes.data()
 		};
@@ -1126,55 +1187,58 @@ private:
 
 	void createDescriptorSets()
 	{
-		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
-		vk::DescriptorSetAllocateInfo allocInfo
+		for (auto& gameObject : gameObjects)
 		{
-			.descriptorPool = descriptorPool,
-			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
-			.pSetLayouts = layouts.data()
-		};
-
-		descriptorSets.clear();
-		descriptorSets = device.allocateDescriptorSets(allocInfo);
-
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-		{
-			vk::DescriptorBufferInfo bufferInfo
+			std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptorSetLayout);
+			vk::DescriptorSetAllocateInfo allocInfo
 			{
-				.buffer = uniformBuffers[i],
-				.offset = 0,
-				.range = sizeof(UniformBufferObject)
+				.descriptorPool = *descriptorPool,
+				.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+				.pSetLayouts = layouts.data()
 			};
 
-			vk::DescriptorImageInfo imageInfo
+			gameObject.descriptorSets.clear();
+			gameObject.descriptorSets = device.allocateDescriptorSets(allocInfo);
+
+			for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 			{
-				.sampler = textureSampler,
-				.imageView = textureImageView,
-				.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
-			};
+				vk::DescriptorBufferInfo bufferInfo
+				{
+					.buffer = *gameObject.uniformBuffers[i],
+					.offset = 0,
+					.range = sizeof(UniformBufferObject)
+				};
 
-			std::array descriptorWrites{
-				vk::WriteDescriptorSet
+				vk::DescriptorImageInfo imageInfo
 				{
-					.dstSet = descriptorSets[i],
-					.dstBinding = 0,
-					.dstArrayElement = 0,
-					.descriptorCount = 1,
-					.descriptorType = vk::DescriptorType::eUniformBuffer,
-					.pBufferInfo = &bufferInfo
-				},
-				vk::WriteDescriptorSet
-				{
-					.dstSet = descriptorSets[i],
-					.dstBinding = 1,
-					.dstArrayElement = 0,
-					.descriptorCount = 1,
-					.descriptorType = vk::DescriptorType::eCombinedImageSampler,
-					.pImageInfo = &imageInfo
-				},
-			};
-			
-			device.updateDescriptorSets(descriptorWrites, {});
+					.sampler = *textureSampler,
+					.imageView = *textureImageView,
+					.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+				};
+
+				std::array descriptorWrites{
+					vk::WriteDescriptorSet
+					{
+						.dstSet = *gameObject.descriptorSets[i],
+						.dstBinding = 0,
+						.dstArrayElement = 0,
+						.descriptorCount = 1,
+						.descriptorType = vk::DescriptorType::eUniformBuffer,
+						.pBufferInfo = &bufferInfo
+					},
+					vk::WriteDescriptorSet
+					{
+						.dstSet = *gameObject.descriptorSets[i],
+						.dstBinding = 1,
+						.dstArrayElement = 0,
+						.descriptorCount = 1,
+						.descriptorType = vk::DescriptorType::eCombinedImageSampler,
+						.pImageInfo = &imageInfo
+					},
+				};
+
+				device.updateDescriptorSets(descriptorWrites, {});
+			}
 		}
 	}
 
@@ -1280,17 +1344,32 @@ private:
 	void updateUniformBuffer(uint32_t currentImage)
 	{
 		static auto startTime = std::chrono::high_resolution_clock::now();
+		static auto lastFrameTime = startTime;
 
 		auto currentTime = std::chrono::high_resolution_clock::now();
 		float time = std::chrono::duration<float>(currentTime - startTime).count();
+		float deltaTime = std::chrono::duration<float>(currentTime - lastFrameTime).count();
+		lastFrameTime = currentTime;
 
-		UniformBufferObject ubo{};
-		ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height), 0.1f, 10.0f);
-		ubo.proj[1][1] *= -1;
+		glm::mat4 view = glm::lookAt(glm::vec3(2.0f, 2.0f, 6.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::mat4 proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height), 0.1f, 20.0f);
 
-		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+		for (auto& gameObject : gameObjects)
+		{
+			const float rotationSpeed = 0.5f;
+			gameObject.rotation.y += rotationSpeed * deltaTime;
+
+			glm::mat4 model = gameObject.getModelMatrix();
+
+			UniformBufferObject ubo
+			{
+				.model = model,
+				.view = view,
+				.proj = proj
+			};
+
+			memcpy(gameObject.uniformBuffersMapped[currentFrame], &ubo, sizeof(ubo));
+		}
 	}
 
 #if PLATFORM_DESKTOP
@@ -1715,10 +1794,23 @@ private:
 		commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
 		commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
 		commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
+
 		commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, { 0 });
 		commandBuffers[currentFrame].bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
-		commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipelineLayout, 0, *descriptorSets[currentFrame], nullptr);
-		commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
+
+		for (const auto& gameObject : gameObjects)
+		{
+			commandBuffers[currentFrame].bindDescriptorSets(
+				vk::PipelineBindPoint::eGraphics,
+				*pipelineLayout,
+				0,
+				*gameObject.descriptorSets[currentFrame],
+				nullptr
+			);
+
+			commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
+		}
+
 		commandBuffers[currentFrame].endRendering();
 
 		transition_image_layout(
@@ -1987,12 +2079,9 @@ private:
 	vk::raii::Buffer indexBuffer = nullptr;
 	vk::raii::DeviceMemory indexBufferMemory = nullptr;
 
-	std::vector<vk::raii::Buffer> uniformBuffers;
-	std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
-	std::vector<void*> uniformBuffersMapped;
+	std::array<GameObject, MAX_OBJECTS> gameObjects;
 
 	vk::raii::DescriptorPool descriptorPool = nullptr;
-	std::vector<vk::raii::DescriptorSet> descriptorSets;
 
 	vk::raii::CommandPool commandPool = nullptr;
 	std::vector<vk::raii::CommandBuffer> commandBuffers;
