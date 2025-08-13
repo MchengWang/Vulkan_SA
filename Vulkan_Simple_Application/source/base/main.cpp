@@ -1381,7 +1381,6 @@ private:
 	}
 #endif // PLATFROM_DESKTOP
 
-
 /**
 * helper functions
 */
@@ -2104,7 +2103,7 @@ private:
 
 };
 
-int main()
+int main3()
 {
 	try
 	{
